@@ -55,7 +55,7 @@ router.post("/", async (req, res) => {
         .trim()
         .replace(/\/+$/, "") + "/login";
     const shareMessage =
-      `Hi ${name}, Dr. ${req.user.name} added you as an assistant on MyDentalBooking.\n\n` +
+      `Hi ${name}, Dr. ${req.user.name} added you as an assistant on MyMedin.\n\n` +
       `Login: ${loginUrl}\n` +
       (cleanEmail ? `Email: ${cleanEmail}\n` : `Phone: ${trimmedPhone}\n`) +
       `Password: ${password}\n\n` +
@@ -64,7 +64,7 @@ router.post("/", async (req, res) => {
     if (cleanEmail) {
       sendMail({
         to: cleanEmail,
-        subject: "Your MyDentalBooking assistant account",
+        subject: "Your MyMedin assistant account",
         text: shareMessage,
         html: shareMessage.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("staff creds email failed:", e?.message));

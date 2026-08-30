@@ -62,10 +62,10 @@ export async function runBalanceRemindersOnce() {
     const to = client.managed ? client.guardianEmail : client.email;
     if (to) {
       const greet = client.managed ? client.guardianName || "there" : client.name;
-      const text = `Hi ${greet},\n\n${body}\n\nThank you,\nMyDentalBooking`;
+      const text = `Hi ${greet},\n\n${body}\n\nThank you,\nMyMedin`;
       sendMail({
         to,
-        subject: "Outstanding balance — MyDentalBooking",
+        subject: "Outstanding balance — MyMedin",
         text,
         html: text.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("[balance] email:", e?.message));

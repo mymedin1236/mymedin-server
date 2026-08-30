@@ -5,7 +5,7 @@ export const mailerConfigured = !!process.env.RESEND_API_KEY;
 
 const resend = mailerConfigured ? new Resend(process.env.RESEND_API_KEY) : null;
 // Use a verified domain sender in production; onboarding@resend.dev works for testing.
-const FROM = process.env.MAIL_FROM || "MyDentalBooking <onboarding@resend.dev>";
+const FROM = process.env.MAIL_FROM || "MyMedin <onboarding@resend.dev>";
 
 // Surface mail config at boot so deploy logs reveal misconfiguration immediately.
 console.log(

@@ -1,7 +1,7 @@
 {
-  "name": "dental-clinic-server",
+  "name": "mymedin-server",
   "version": "1.0.0",
-  "description": "Backend API for Dental Clinic management",
+  "description": "Backend API for medical practice management",
   "main": "server.js",
   "type": "module",
   "scripts": {

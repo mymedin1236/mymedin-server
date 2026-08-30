@@ -207,7 +207,7 @@ router.post("/forgot-password", async (req, res) => {
       const link = `${base}/reset-password?token=${token}`;
       const result = await sendMail({
         to,
-        subject: "Reset your MyDentalBooking password",
+        subject: "Reset your MyMedin password",
         text: `We received a request to reset your password.\n\nUse this link within 1 hour:\n${link}\n\nIf you didn't request this, you can ignore this email.`,
         html: `<p>We received a request to reset your password.</p>
                <p>Use this link within 1 hour:</p>

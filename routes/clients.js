@@ -79,7 +79,7 @@ router.post("/", async (req, res) => {
       if (gEmail) {
         sendMail({
           to: gEmail,
-          subject: `${name.trim()} — added at MyDentalBooking`,
+          subject: `${name.trim()} — added at MyMedin`,
           text: shareMessage,
           html: shareMessage.replace(/\n/g, "<br/>"),
         }).catch((e) => console.error("guardian email failed:", e?.message));
@@ -143,7 +143,7 @@ router.post("/", async (req, res) => {
         .trim()
         .replace(/\/+$/, "") + "/login";
     const shareMessage =
-      `Hi ${name}, Dr. ${dentistName} created your MyDentalBooking account.\n\n` +
+      `Hi ${name}, Dr. ${dentistName} created your MyMedin account.\n\n` +
       `Login: ${loginUrl}\n` +
       (cleanEmail ? `Email: ${cleanEmail}\n` : `Phone: ${trimmedPhone}\n`) +
       `Password: ${password}\n\n` +
@@ -153,7 +153,7 @@ router.post("/", async (req, res) => {
     if (cleanEmail) {
       sendMail({
         to: cleanEmail,
-        subject: "Your MyDentalBooking account",
+        subject: "Your MyMedin account",
         text: shareMessage,
         html: shareMessage.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("creds email failed:", e?.message));
@@ -261,7 +261,7 @@ router.post("/:id/reset-password", async (req, res) => {
         .trim()
         .replace(/\/+$/, "") + "/login";
     const shareMessage =
-      `Hi ${client.name}, your MyDentalBooking password has been reset.\n\n` +
+      `Hi ${client.name}, your MyMedin password has been reset.\n\n` +
       `Login: ${loginUrl}\n` +
       (client.email ? `Email: ${client.email}\n` : client.phone ? `Phone: ${client.phone}\n` : "") +
       `Password: ${password}\n\n` +

@@ -75,7 +75,7 @@ async function sendWindow({ flag, ms, lead }) {
       const text = `Hi ${greet},\n\n${body}\n\nSee you then!`;
       sendMail({
         to,
-        subject: "Appointment reminder — MyDentalBooking",
+        subject: "Appointment reminder — MyMedin",
         text,
         html: text.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("[reminder] email:", e?.message));
