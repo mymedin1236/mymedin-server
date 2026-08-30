@@ -44,7 +44,7 @@ export async function runBalanceRemindersOnce() {
     const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const whose = client.managed ? `${client.name}'s` : "your";
     const title = "Outstanding balance";
-    const body = `You have an outstanding balance of ${money(row.total)} on ${whose} dental treatment with ${drName}. Please clear it at your next visit.`;
+    const body = `You have an outstanding balance of ${money(row.total)} on ${whose} treatment with ${drName}. Please clear it at your next visit.`;
 
     // Managed dependents notify the linked guardian's account; others notify self.
     const targetUser = client.managed ? client.guardian : client._id;

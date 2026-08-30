@@ -9,7 +9,8 @@
     "dev": "nodemon server.js",
     "seed": "node seed/seedProducts.js",
     "seed:admin": "node scripts/seedAdmin.js",
-    "dedupe:appointments": "node scripts/dedupeScheduled.js"
+    "dedupe:appointments": "node scripts/dedupeScheduled.js",
+    "migrate:doctor": "node scripts/migrateDentistToDoctor.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

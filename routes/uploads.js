@@ -27,7 +27,7 @@ router.post("/avatar", async (req, res) => {
       return res.status(503).json({ message: "Image uploads are not configured on the server." });
     }
     const result = await cloudinary.uploader.upload(image, {
-      folder: "dental/avatars",
+      folder: "mymedin/avatars",
       resource_type: "image",
       format: "jpg",
       transformation: [
