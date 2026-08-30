@@ -32,7 +32,7 @@ const treatmentSchema = new mongoose.Schema(
     client: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: "Appointment" },
     procedure: { type: String, required: true, trim: true },
-    toothNumber: { type: String },
+    site: { type: String },
     diagnosis: { type: String },
     description: { type: String },
     // Post-visit prescription / care advice for the patient (e.g. "avoid hot

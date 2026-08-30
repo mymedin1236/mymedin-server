@@ -189,7 +189,7 @@ router.post("/", async (req, res) => {
       client,
       appointment,
       procedure,
-      toothNumber,
+      site,
       diagnosis,
       description,
       prescription,
@@ -219,7 +219,7 @@ router.post("/", async (req, res) => {
     //  (b) two staff (doctor + assistant, on separate phones) both recording the
     //      SAME treatment for a patient without seeing the other's entry.
     // We look for an existing treatment for this patient with the same procedure,
-    // cost and tooth ON THE SAME DAY. A very recent match is a retry (return it
+    // cost and site ON THE SAME DAY. A very recent match is a retry (return it
     // silently); an older match is likely a real duplicate, so we ask the staff to
     // confirm (409) — and only add it if they resend with force:true.
     const force = req.body.force === true;
@@ -232,7 +232,7 @@ router.post("/", async (req, res) => {
       client,
       procedure: procedureClean,
       cost: total,
-      toothNumber: toothNumber ?? null,
+      site: site ?? null,
       date: { $gte: dayStart, $lt: dayEnd },
     }).sort({ createdAt: -1 });
     if (existing) {
@@ -252,7 +252,7 @@ router.post("/", async (req, res) => {
       client,
       appointment,
       procedure: procedureClean,
-      toothNumber,
+      site,
       diagnosis: diagnosisClean,
       description: descriptionClean,
       prescription: prescriptionClean,
@@ -283,7 +283,7 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const editable = ["procedure", "toothNumber", "diagnosis", "description", "date"];
+    const editable = ["procedure", "site", "diagnosis", "description", "date"];
     for (const f of editable) if (req.body[f] !== undefined) tr[f] = req.body[f];
     // Normalise casing on edit too (procedure -> Each Word, others -> First letter).
     if (req.body.procedure !== undefined) tr.procedure = capWords(req.body.procedure);
