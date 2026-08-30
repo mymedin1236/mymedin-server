@@ -1,12 +1,12 @@
-// Read-only report: find future appointments that fall OUTSIDE a dentist's new
+// Read-only report: find future appointments that fall OUTSIDE a doctor's new
 // clinic hours, so the clinic can reschedule + notify those patients.
 //
 // Configured here for the Mon/Tue/Wed 7:30–9:30 PM (19:30–21:30) change, in the
 // clinic's local timezone (Asia/Karachi). Nothing is modified.
 //
 // Usage (from dental-app-server/):
-//   DENTIST_PHONE=03434716440 node scripts/hoursConflicts.js
-//   DENTIST_EMAIL=dr@example.com node scripts/hoursConflicts.js
+//   DOCTOR_PHONE=03434716440 node scripts/hoursConflicts.js
+//   DOCTOR_EMAIL=dr@example.com node scripts/hoursConflicts.js
 import "dotenv/config";
 import mongoose from "mongoose";
 import { connectDB } from "../config/db.js";
@@ -31,21 +31,21 @@ const localParts = (d) => {
 
 async function run() {
   await connectDB();
-  const id = (process.env.DENTIST_PHONE || process.env.DENTIST_EMAIL || "").trim();
+  const id = (process.env.DOCTOR_PHONE || process.env.DOCTOR_EMAIL || "").trim();
   if (!id) {
-    console.error("Set DENTIST_PHONE=<phone> or DENTIST_EMAIL=<email>");
+    console.error("Set DOCTOR_PHONE=<phone> or DOCTOR_EMAIL=<email>");
     process.exit(1);
   }
   const query = id.includes("@") ? { email: id.toLowerCase() } : { phone: id };
-  const dentist = await User.findOne({ ...query, role: "dentist" });
-  if (!dentist) {
-    console.error("No dentist found for:", id);
+  const doctor = await User.findOne({ ...query, role: "doctor" });
+  if (!doctor) {
+    console.error("No doctor found for:", id);
     process.exit(1);
   }
 
   const now = new Date();
   const appts = await Appointment.find({
-    dentist: dentist._id,
+    doctor: doctor._id,
     date: { $gte: now },
     status: { $in: ["scheduled", "pending"] },
   })
@@ -61,7 +61,7 @@ async function run() {
     conflicts.push({ a, p });
   }
 
-  console.log(`\nDentist:  ${dentist.name}  (${dentist.phone || dentist.email})`);
+  console.log(`\nDoctor:  ${doctor.name}  (${doctor.phone || doctor.email})`);
   console.log(`New Mon/Tue/Wed hours: 7:30 PM – 9:30 PM  (timezone ${TZ})`);
   console.log(`Future scheduled/pending appointments checked: ${appts.length}`);
   console.log(`Appointments OUTSIDE the new window (need reschedule): ${conflicts.length}\n`);

@@ -118,16 +118,16 @@ router.get("/users", async (req, res) => {
   }
 });
 
-// GET /api/admin/enrollments -> every clinic (dentist) with its e-agreement
+// GET /api/admin/enrollments -> every clinic (doctor) with its e-agreement
 // status: enrollment date, discovery-end (sign date + 3 months), and phase.
 router.get("/enrollments", async (req, res) => {
   try {
-    const dentists = await User.find({ role: "dentist" })
+    const doctors = await User.find({ role: "doctor" })
       .select("name clinicName email phone agreement billing createdAt")
       .sort({ createdAt: -1 })
       .lean();
     const now = Date.now();
-    const clinics = dentists.map((d) => {
+    const clinics = doctors.map((d) => {
       const acceptedAt = d.agreement?.acceptedAt || null;
       let discoveryEnd = null;
       let phase = "not_signed";
@@ -162,20 +162,20 @@ router.get("/enrollments", async (req, res) => {
 });
 
 // "View as" — mint a short-lived, read-only token so an admin can observe a
-// dentist's exact view without their (hashed, unrecoverable) password. The token
+// doctor's exact view without their (hashed, unrecoverable) password. The token
 // carries { readOnly: true }, which the global guard uses to block every write.
-router.post("/impersonate/:dentistId", async (req, res) => {
+router.post("/impersonate/:doctorId", async (req, res) => {
   try {
-    const dentist = await User.findOne({
-      _id: req.params.dentistId,
-      role: "dentist",
+    const doctor = await User.findOne({
+      _id: req.params.doctorId,
+      role: "doctor",
     }).select("_id name clinicName email");
-    if (!dentist) return res.status(404).json({ message: "Dentist not found" });
+    if (!doctor) return res.status(404).json({ message: "Doctor not found" });
 
     const token = jwt.sign(
       {
-        id: String(dentist._id),
-        role: "dentist",
+        id: String(doctor._id),
+        role: "doctor",
         readOnly: true,
         impersonatedBy: String(req.user._id),
       },
@@ -185,26 +185,26 @@ router.post("/impersonate/:dentistId", async (req, res) => {
 
     // Audit trail: who viewed whom (auto-expires with the login-event TTL).
     LoginEvent.create({
-      user: dentist._id,
-      name: dentist.name,
-      identifier: dentist.email || "",
-      role: "dentist",
+      user: doctor._id,
+      name: doctor.name,
+      identifier: doctor.email || "",
+      role: "doctor",
       success: true,
       reason: `read-only view by admin ${req.user.email || req.user._id}`,
       ip: req.ip,
       userAgent: req.headers["user-agent"] || "",
     }).catch(() => {});
-    console.log(`[impersonate] admin ${req.user._id} -> dentist ${dentist._id} (read-only)`);
+    console.log(`[impersonate] admin ${req.user._id} -> doctor ${doctor._id} (read-only)`);
 
     const base =
       (process.env.CLIENT_ORIGIN || "").split(",")[0].trim() || "http://localhost:5173";
-    const label = dentist.clinicName || dentist.name || "clinic";
+    const label = doctor.clinicName || doctor.name || "clinic";
     const url = `${base}/impersonate#token=${token}&name=${encodeURIComponent(label)}`;
 
     res.json({
       token,
       url,
-      dentist: { _id: dentist._id, name: dentist.name, clinicName: dentist.clinicName || "" },
+      doctor: { _id: doctor._id, name: doctor.name, clinicName: doctor.clinicName || "" },
     });
   } catch (err) {
     console.error(err);
@@ -215,10 +215,10 @@ router.post("/impersonate/:dentistId", async (req, res) => {
 // ---- Subscription invoices ------------------------------------------------
 
 // Set (or clear) a clinic's billing start month + optional fee override.
-router.put("/dentists/:id/billing", async (req, res) => {
+router.put("/doctors/:id/billing", async (req, res) => {
   try {
-    const d = await User.findOne({ _id: req.params.id, role: "dentist" });
-    if (!d) return res.status(404).json({ message: "Dentist not found" });
+    const d = await User.findOne({ _id: req.params.id, role: "doctor" });
+    if (!d) return res.status(404).json({ message: "Doctor not found" });
     const { startMonth, monthlyFee } = req.body;
     if (startMonth !== undefined && startMonth && !/^\d{4}-\d{2}$/.test(startMonth)) {
       return res.status(400).json({ message: "startMonth must be YYYY-MM" });
@@ -252,7 +252,7 @@ router.post("/invoices/generate", async (req, res) => {
 router.get("/invoices", async (req, res) => {
   try {
     const invoices = await Invoice.find()
-      .populate("dentist", "name clinicName email billing")
+      .populate("doctor", "name clinicName email billing")
       .sort({ month: -1, createdAt: -1 });
     res.json({ count: invoices.length, defaultFee: DEFAULT_MONTHLY_FEE, invoices });
   } catch (err) {

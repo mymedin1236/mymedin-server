@@ -7,17 +7,17 @@ import { protect, requireRole, clinicId } from "../middleware/auth.js";
 const router = express.Router();
 
 // Finances (income totals, trends) are the clinic owner's — assistants must not
-// see them. Dentist-only across every endpoint in this router.
-router.use(protect, requireRole("dentist"));
+// see them. Doctor-only across every endpoint in this router.
+router.use(protect, requireRole("doctor"));
 
 // GET /api/finances/summary -> income (treatments), expenses (supply orders), trends, outstanding
 router.get("/summary", async (req, res) => {
   try {
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
 
     // --- Income from treatments (collected = sum of actual payments) ---
     const [income] = await Treatment.aggregate([
-      { $match: { dentist: dentistId } },
+      { $match: { doctor: doctorId } },
       { $addFields: { collected: { $sum: "$payments.amount" } } },
       {
         $group: {
@@ -34,13 +34,13 @@ router.get("/summary", async (req, res) => {
 
     // --- Expenses from supply orders (cancelled excluded) ---
     const [expense] = await Order.aggregate([
-      { $match: { dentist: dentistId, status: { $ne: "cancelled" } } },
+      { $match: { doctor: doctorId, status: { $ne: "cancelled" } } },
       { $group: { _id: null, totalSpent: { $sum: "$total" }, orderCount: { $sum: 1 } } },
     ]);
 
     // --- Maintenance expenses ---
     const [maintenance] = await Expense.aggregate([
-      { $match: { dentist: dentistId } },
+      { $match: { doctor: doctorId } },
       { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
     ]);
 
@@ -52,7 +52,7 @@ router.get("/summary", async (req, res) => {
 
     // --- Monthly trend (last 6 months): collected income vs supply spend ---
     const incomeByMonth = await Treatment.aggregate([
-      { $match: { dentist: dentistId } },
+      { $match: { doctor: doctorId } },
       { $unwind: "$payments" },
       {
         $group: {
@@ -62,7 +62,7 @@ router.get("/summary", async (req, res) => {
       },
     ]);
     const orderByMonth = await Order.aggregate([
-      { $match: { dentist: dentistId, status: { $ne: "cancelled" } } },
+      { $match: { doctor: doctorId, status: { $ne: "cancelled" } } },
       {
         $group: {
           _id: { y: { $year: "$createdAt" }, m: { $month: "$createdAt" } },
@@ -71,7 +71,7 @@ router.get("/summary", async (req, res) => {
       },
     ]);
     const maintByMonth = await Expense.aggregate([
-      { $match: { dentist: dentistId } },
+      { $match: { doctor: doctorId } },
       {
         $group: {
           _id: { y: { $year: "$date" }, m: { $month: "$date" } },
@@ -86,7 +86,7 @@ router.get("/summary", async (req, res) => {
 
     // --- Outstanding (unpaid) treatments ---
     const unpaid = await Treatment.find({
-      dentist: dentistId,
+      doctor: doctorId,
       $expr: { $lt: [{ $sum: "$payments.amount" }, "$cost"] },
     })
       .populate("client", "name")
@@ -239,7 +239,7 @@ function computeWindow(period, offset) {
 // Collected / Expenses / Outstanding for a single period, each with line-item details.
 router.get("/period", async (req, res) => {
   try {
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
     const period = PERIODS[req.query.period] ? req.query.period : "month";
     const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
     const { start, end, label } = computeWindow(period, offset);
@@ -248,7 +248,7 @@ router.get("/period", async (req, res) => {
     const [collectedItems, orderItems, maintItems, outstandingItems] = await Promise.all([
       // Payments collected within the period
       Treatment.aggregate([
-        { $match: { dentist: dentistId } },
+        { $match: { doctor: doctorId } },
         { $unwind: "$payments" },
         { $match: { "payments.date": inRange } },
         { $lookup: { from: "users", localField: "client", foreignField: "_id", as: "c" } },
@@ -269,17 +269,17 @@ router.get("/period", async (req, res) => {
       ]),
       // Supply orders within the period
       Order.aggregate([
-        { $match: { dentist: dentistId, status: { $ne: "cancelled" }, createdAt: inRange } },
+        { $match: { doctor: doctorId, status: { $ne: "cancelled" }, createdAt: inRange } },
         { $project: { _id: 0, date: "$createdAt", title: "Supply order", amount: "$total", kind: "supply" } },
       ]),
       // Maintenance expenses within the period
       Expense.aggregate([
-        { $match: { dentist: dentistId, date: inRange } },
+        { $match: { doctor: doctorId, date: inRange } },
         { $project: { _id: 0, date: 1, title: 1, amount: 1, category: 1, kind: "maintenance" } },
       ]),
       // Treatments billed within the period that still have a balance
       Treatment.aggregate([
-        { $match: { dentist: dentistId, date: inRange } },
+        { $match: { doctor: doctorId, date: inRange } },
         { $addFields: { paidAmount: { $sum: "$payments.amount" } } },
         { $addFields: { balance: { $subtract: ["$cost", "$paidAmount"] } } },
         { $match: { balance: { $gt: 0 } } },
@@ -329,7 +329,7 @@ router.get("/period", async (req, res) => {
 // GET /api/finances/trend?period=day|week|month|year
 router.get("/trend", async (req, res) => {
   try {
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
     const period = PERIODS[req.query.period] ? req.query.period : "month";
     const { unit } = PERIODS[period];
 
@@ -351,16 +351,16 @@ router.get("/trend", async (req, res) => {
 
     const [income, orders, maint] = await Promise.all([
       Treatment.aggregate([
-        { $match: { dentist: dentistId } },
+        { $match: { doctor: doctorId } },
         { $unwind: "$payments" },
         { $group: { _id: keyOf("$payments.date"), amount: { $sum: "$payments.amount" } } },
       ]),
       Order.aggregate([
-        { $match: { dentist: dentistId, status: { $ne: "cancelled" } } },
+        { $match: { doctor: doctorId, status: { $ne: "cancelled" } } },
         { $group: { _id: keyOf("$createdAt"), amount: { $sum: "$total" } } },
       ]),
       Expense.aggregate([
-        { $match: { dentist: dentistId } },
+        { $match: { doctor: doctorId } },
         { $group: { _id: keyOf("$date"), amount: { $sum: "$amount" } } },
       ]),
     ]);

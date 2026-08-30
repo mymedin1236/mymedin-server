@@ -25,11 +25,11 @@ export const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// Resolve the clinic owner (dentist) id for any staff member. An assistant acts
-// on behalf of the dentist they belong to, so all clinic-scoped data is keyed to
-// the dentist's id whether the request comes from the dentist or their assistant.
+// Resolve the clinic owner (doctor) id for any staff member. An assistant acts
+// on behalf of the doctor they belong to, so all clinic-scoped data is keyed to
+// the doctor's id whether the request comes from the doctor or their assistant.
 export const clinicId = (user) =>
-  user.role === "assistant" ? user.dentist : user._id;
+  user.role === "assistant" ? user.doctor : user._id;
 
-// Convenience: middleware allowing any clinic staff (dentist or their assistant).
-export const requireStaff = requireRole("dentist", "assistant");
+// Convenience: middleware allowing any clinic staff (doctor or their assistant).
+export const requireStaff = requireRole("doctor", "assistant");

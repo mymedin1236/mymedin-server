@@ -1,11 +1,11 @@
 import mongoose from "mongoose";
 
-// One monthly subscription invoice for a clinic (dentist). Generated on the 5th
-// of each billing month, due on the 15th. Admin marks it paid once the dentist
-// settles; the dentist sees the status in their Invoices tab.
+// One monthly subscription invoice for a clinic (doctor). Generated on the 5th
+// of each billing month, due on the 15th. Admin marks it paid once the doctor
+// settles; the doctor sees the status in their Invoices tab.
 const invoiceSchema = new mongoose.Schema(
   {
-    dentist: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     month: { type: String, required: true }, // billing month, "YYYY-MM" (e.g. "2026-08")
     amount: { type: Number, required: true },
     currency: { type: String, default: "PKR" },
@@ -20,6 +20,6 @@ const invoiceSchema = new mongoose.Schema(
 );
 
 // One invoice per clinic per month — makes generation safely idempotent.
-invoiceSchema.index({ dentist: 1, month: 1 }, { unique: true });
+invoiceSchema.index({ doctor: 1, month: 1 }, { unique: true });
 
 export default mongoose.model("Invoice", invoiceSchema);

@@ -18,39 +18,39 @@ const notify = async (user, type, title, body, data) => {
   return notification;
 };
 
-// Assistants act on behalf of their dentist — resolve the dentist's display name.
-const dentistNameFor = async (user) => {
+// Assistants act on behalf of their doctor — resolve the doctor's display name.
+const doctorNameFor = async (user) => {
   if (user.role === "assistant") {
-    const d = await User.findById(user.dentist).select("name");
-    return d?.name || "your dentist";
+    const d = await User.findById(user.doctor).select("name");
+    return d?.name || "your doctor";
   }
   return user.name;
 };
 
-const recomputeRating = async (dentistId) => {
+const recomputeRating = async (doctorId) => {
   const [agg] = await Review.aggregate([
-    { $match: { dentist: new mongoose.Types.ObjectId(dentistId) } },
-    { $group: { _id: "$dentist", avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+    { $match: { doctor: new mongoose.Types.ObjectId(doctorId) } },
+    { $group: { _id: "$doctor", avg: { $avg: "$rating" }, count: { $sum: 1 } } },
   ]);
-  await User.findByIdAndUpdate(dentistId, {
+  await User.findByIdAndUpdate(doctorId, {
     rating: agg ? Math.round(agg.avg * 10) / 10 : 0,
     reviewCount: agg ? agg.count : 0,
   });
 };
 
-// POST /api/associations/request { dentistId }  (client) -> send association request
+// POST /api/associations/request { doctorId }  (client) -> send association request
 router.post("/request", requireRole("client"), async (req, res) => {
   try {
-    const { dentistId } = req.body;
-    if (!mongoose.isValidObjectId(dentistId)) {
-      return res.status(400).json({ message: "Invalid dentist" });
+    const { doctorId } = req.body;
+    if (!mongoose.isValidObjectId(doctorId)) {
+      return res.status(400).json({ message: "Invalid doctor" });
     }
-    const dentist = await User.findOne({ _id: dentistId, role: "dentist" });
-    if (!dentist) return res.status(404).json({ message: "Dentist not found" });
+    const doctor = await User.findOne({ _id: doctorId, role: "doctor" });
+    if (!doctor) return res.status(404).json({ message: "Doctor not found" });
 
     const me = await User.findById(req.user._id);
-    if (me.dentist) {
-      return res.status(409).json({ message: "You are already associated with a dentist. Disassociate first." });
+    if (me.doctor) {
+      return res.status(409).json({ message: "You are already associated with a doctor. Disassociate first." });
     }
     const existingPending = await Association.findOne({
       client: me._id,
@@ -62,12 +62,12 @@ router.post("/request", requireRole("client"), async (req, res) => {
 
     const association = await Association.create({
       client: me._id,
-      dentist: dentist._id,
+      doctor: doctor._id,
       status: "pending",
       initiatedBy: "client",
     });
 
-    await notifyClinic(dentist._id, {
+    await notifyClinic(doctor._id, {
       type: "association_request",
       title: "New patient request",
       body: `${me.name} has requested to associate with your clinic.`,
@@ -81,21 +81,21 @@ router.post("/request", requireRole("client"), async (req, res) => {
   }
 });
 
-// GET /api/associations/requests  (dentist) -> pending requests
-router.get("/requests", requireRole("dentist", "assistant"), async (req, res) => {
-  const requests = await Association.find({ dentist: clinicId(req.user), status: "pending" })
+// GET /api/associations/requests  (doctor) -> pending requests
+router.get("/requests", requireRole("doctor", "assistant"), async (req, res) => {
+  const requests = await Association.find({ doctor: clinicId(req.user), status: "pending" })
     .populate("client", "name email phone")
     .sort({ createdAt: -1 });
   res.json(requests);
 });
 
 // POST /api/associations/:id/approve  (clinic staff)
-router.post("/:id/approve", requireRole("dentist", "assistant"), async (req, res) => {
+router.post("/:id/approve", requireRole("doctor", "assistant"), async (req, res) => {
   try {
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
     const association = await Association.findOne({
       _id: req.params.id,
-      dentist: dentistId,
+      doctor: doctorId,
       status: "pending",
     });
     if (!association) return res.status(404).json({ message: "Request not found" });
@@ -103,14 +103,14 @@ router.post("/:id/approve", requireRole("dentist", "assistant"), async (req, res
     association.status = "approved";
     association.respondedAt = new Date();
     await association.save();
-    await User.findByIdAndUpdate(association.client, { dentist: dentistId });
+    await User.findByIdAndUpdate(association.client, { doctor: doctorId });
 
     await notify(
       association.client,
       "association_approved",
       "Request approved",
-      `Dr. ${await dentistNameFor(req.user)} approved your association request.`,
-      { associationId: association._id, dentistId }
+      `Dr. ${await doctorNameFor(req.user)} approved your association request.`,
+      { associationId: association._id, doctorId }
     );
 
     res.json(association);
@@ -120,12 +120,12 @@ router.post("/:id/approve", requireRole("dentist", "assistant"), async (req, res
   }
 });
 
-// POST /api/associations/:id/reject  (dentist)
-router.post("/:id/reject", requireRole("dentist", "assistant"), async (req, res) => {
+// POST /api/associations/:id/reject  (doctor)
+router.post("/:id/reject", requireRole("doctor", "assistant"), async (req, res) => {
   try {
     const association = await Association.findOne({
       _id: req.params.id,
-      dentist: clinicId(req.user),
+      doctor: clinicId(req.user),
       status: "pending",
     });
     if (!association) return res.status(404).json({ message: "Request not found" });
@@ -138,7 +138,7 @@ router.post("/:id/reject", requireRole("dentist", "assistant"), async (req, res)
       association.client,
       "association_rejected",
       "Request declined",
-      `Dr. ${await dentistNameFor(req.user)} declined your association request.`,
+      `Dr. ${await doctorNameFor(req.user)} declined your association request.`,
       { associationId: association._id }
     );
 
@@ -149,58 +149,58 @@ router.post("/:id/reject", requireRole("dentist", "assistant"), async (req, res)
   }
 });
 
-// GET /api/associations/me  (client) -> current dentist + pending request
+// GET /api/associations/me  (client) -> current doctor + pending request
 router.get("/me", requireRole("client"), async (req, res) => {
   const me = await User.findById(req.user._id).populate(
-    "dentist",
+    "doctor",
     "name clinicName specialization rating reviewCount availability image"
   );
   const pending = await Association.findOne({ client: me._id, status: "pending" }).populate(
-    "dentist",
+    "doctor",
     "name clinicName"
   );
-  // The patient's own review of their current dentist (so the home screen shows
+  // The patient's own review of their current doctor (so the home screen shows
   // "your review · edit" instead of re-prompting them to rate every visit).
   let myReview = null;
-  if (me.dentist) {
-    const r = await Review.findOne({ dentist: me.dentist._id, client: me._id }).select(
+  if (me.doctor) {
+    const r = await Review.findOne({ doctor: me.doctor._id, client: me._id }).select(
       "rating comment updatedAt"
     );
     if (r) myReview = { rating: r.rating, comment: r.comment || "", updatedAt: r.updatedAt };
   }
-  res.json({ dentist: me.dentist || null, pending: pending || null, myReview });
+  res.json({ doctor: me.doctor || null, pending: pending || null, myReview });
 });
 
 // POST /api/associations/disassociate { rating, comment }  (client)
 router.post("/disassociate", requireRole("client"), async (req, res) => {
   try {
     const me = await User.findById(req.user._id);
-    if (!me.dentist) {
-      return res.status(409).json({ message: "You are not associated with a dentist." });
+    if (!me.doctor) {
+      return res.status(409).json({ message: "You are not associated with a doctor." });
     }
-    const dentistId = me.dentist;
+    const doctorId = me.doctor;
 
     // End the active association
     await Association.findOneAndUpdate(
-      { client: me._id, dentist: dentistId, status: "approved" },
+      { client: me._id, doctor: doctorId, status: "approved" },
       { status: "ended", endedAt: new Date() }
     );
-    me.dentist = undefined;
+    me.doctor = undefined;
     await me.save();
 
     // Capture rating/review on the way out (optional)
     const { rating, comment } = req.body;
     if (rating) {
       await Review.findOneAndUpdate(
-        { dentist: dentistId, client: me._id },
+        { doctor: doctorId, client: me._id },
         { rating: Number(rating), comment },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
-      await recomputeRating(dentistId);
+      await recomputeRating(doctorId);
     }
 
     await notify(
-      dentistId,
+      doctorId,
       "association_ended",
       "Patient disassociated",
       `${me.name} has left your clinic.`,

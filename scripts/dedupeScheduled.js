@@ -1,13 +1,13 @@
-// Resolve duplicate SCHEDULED appointments so the uniq_dentist_slot_scheduled
-// index can build (it fails while any dentist has two "scheduled" rows at the
+// Resolve duplicate SCHEDULED appointments so the uniq_doctor_slot_scheduled
+// index can build (it fails while any doctor has two "scheduled" rows at the
 // same instant).
 //
 // It is SAFE by default:
 //   • Dry run unless you pass --apply (prints exactly what it WOULD do).
-//   • Only collapses EXACT duplicates — same dentist + same time + SAME patient.
+//   • Only collapses EXACT duplicates — same doctor + same time + SAME patient.
 //     The kept record is the earliest-created one; the extras are cancelled
 //     (reversible) or, with --delete, removed.
-//   • Two DIFFERENT patients at the same dentist+time is a real double-booking:
+//   • Two DIFFERENT patients at the same doctor+time is a real double-booking:
 //     it is only REPORTED, never auto-changed — reschedule/cancel one yourself.
 //
 // Usage (run from the dental-app-server folder, with your normal .env in place):
@@ -27,12 +27,12 @@ const action = DELETE ? "delete" : "cancel";
 
 await connectDB();
 
-// Groups of scheduled appointments that share the exact same dentist + instant.
+// Groups of scheduled appointments that share the exact same doctor + instant.
 const groups = await Appointment.aggregate([
   { $match: { status: "scheduled" } },
   {
     $group: {
-      _id: { dentist: "$dentist", date: "$date" },
+      _id: { doctor: "$doctor", date: "$date" },
       count: { $sum: 1 },
       rows: { $push: { id: "$_id", client: "$client", createdAt: "$createdAt" } },
     },
@@ -58,7 +58,7 @@ for (const g of groups) {
     const [keep, ...extras] = rows;
     extrasActed += extras.length;
     console.log(
-      `DUP      dentist=${g._id.dentist} date=${whenISO} patient=${[...clients][0]} ` +
+      `DUP      doctor=${g._id.doctor} date=${whenISO} patient=${[...clients][0]} ` +
         `keep=${keep.id} ${action}=${extras.map((e) => e.id).join(",")}`
     );
     if (APPLY) {
@@ -70,12 +70,12 @@ for (const g of groups) {
   } else {
     // Different patients at the same slot — needs a human decision.
     conflicts.push({
-      dentist: String(g._id.dentist),
+      doctor: String(g._id.doctor),
       date: whenISO,
       appointments: rows.map((r) => ({ id: String(r.id), patient: String(r.client) })),
     });
     console.log(
-      `CONFLICT dentist=${g._id.dentist} date=${whenISO} ` +
+      `CONFLICT doctor=${g._id.doctor} date=${whenISO} ` +
         `patients=${rows.map((r) => String(r.client)).join(" , ")}  (NOT changed — resolve manually)`
     );
   }
@@ -98,7 +98,7 @@ if (!APPLY) {
   if (conflicts.length) {
     console.log("The index will still fail to build until the double-bookings above are resolved.");
   } else {
-    console.log("Restart the server — the uniq_dentist_slot_scheduled index will now build.");
+    console.log("Restart the server — the uniq_doctor_slot_scheduled index will now build.");
   }
 }
 

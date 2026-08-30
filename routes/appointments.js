@@ -11,7 +11,7 @@ import { notifyClinic } from "../utils/notify.js";
 const router = express.Router();
 router.use(protect);
 
-const isStaff = (user) => user.role === "dentist" || user.role === "assistant";
+const isStaff = (user) => user.role === "doctor" || user.role === "assistant";
 
 // Format an appointment time in the clinic's timezone (server runs in UTC),
 // so notifications/emails show local time, not UTC.
@@ -27,29 +27,29 @@ const fmtWhen = (d) =>
     timeZone: CLINIC_TZ,
   });
 
-// Assistants act on behalf of their dentist — resolve the dentist's display name.
-const dentistNameFor = async (user) => {
+// Assistants act on behalf of their doctor — resolve the doctor's display name.
+const doctorNameFor = async (user) => {
   if (user.role === "assistant") {
-    const d = await User.findById(user.dentist).select("name");
-    return d?.name || "your dentist";
+    const d = await User.findById(user.doctor).select("name");
+    return d?.name || "your doctor";
   }
   return user.name;
 };
 
 // True if a scheduled or pending appointment already occupies this exact slot.
 const ACTIVE = ["scheduled", "pending"];
-// A slot is taken if another active appointment for this dentist OVERLAPS it —
+// A slot is taken if another active appointment for this doctor OVERLAPS it —
 // i.e. starts within one slot-length of the requested time — not only if it's the
 // exact same instant. This stops two appointments a few minutes apart on the same
 // chair (e.g. an 8:45 booking made under a 15-min grid vs an 8:40 booking under a
 // 20-min grid). Appointments exactly one slot-length apart (adjacent slots) are
 // still allowed. The exact-time unique index remains as the race-proof backstop.
-const slotConflict = async (dentistId, date, exceptId) => {
-  const owner = await User.findById(dentistId).select("slotDuration").lean();
+const slotConflict = async (doctorId, date, exceptId) => {
+  const owner = await User.findById(doctorId).select("slotDuration").lean();
   const gapMs = (owner?.slotDuration || 15) * 60000;
   const t = new Date(date).getTime();
   const query = {
-    dentist: dentistId,
+    doctor: doctorId,
     status: { $in: ACTIVE },
     date: { $gt: new Date(t - gapMs), $lt: new Date(t + gapMs) },
   };
@@ -76,10 +76,10 @@ const clinicPartsOf = (date) => {
     minutes: s.getUTCHours() * 60 + s.getUTCMinutes(),
   };
 };
-// Returns an error message if `date` is not a bookable slot for this dentist
+// Returns an error message if `date` is not a bookable slot for this doctor
 // (clinic closed that day, outside opening hours, or off the slot grid); else null.
-const invalidSlotReason = async (dentistId, date) => {
-  const owner = await User.findById(dentistId)
+const invalidSlotReason = async (doctorId, date) => {
+  const owner = await User.findById(doctorId)
     .select("availability slotDuration dayOverrides")
     .lean();
   if (!owner) return null; // nothing to validate against
@@ -173,12 +173,12 @@ const notifyUser = async (userId, { type, title, body, url, email, data }) => {
 };
 
 // GET /api/appointments
-// Dentist: appointments where they are the dentist
+// Doctor: appointments where they are the doctor
 // Client: appointments where they are the client
 router.get("/", async (req, res) => {
   let filter;
   if (isStaff(req.user)) {
-    filter = { dentist: clinicId(req.user) };
+    filter = { doctor: clinicId(req.user) };
   } else {
     // A patient sees their own appointments plus those of their dependents.
     const deps = await User.find({ managed: true, guardian: req.user._id }).select("_id");
@@ -186,7 +186,7 @@ router.get("/", async (req, res) => {
   }
   const appts = await Appointment.find(filter)
     .populate("client", "name email phone")
-    .populate("dentist", "name email clinicName location")
+    .populate("doctor", "name email clinicName location")
     .sort({ date: -1 });
   res.json(appts);
 });
@@ -194,17 +194,17 @@ router.get("/", async (req, res) => {
 // GET /api/appointments/booked?from=ISO&to=ISO&exclude=<id>
 // Returns the datetimes of scheduled appointments for the relevant clinic within
 // [from, to), so the UI can show which slots are taken. Scoped by role:
-// staff -> their clinic; client -> their associated dentist.
+// staff -> their clinic; client -> their associated doctor.
 router.get("/booked", async (req, res) => {
   try {
-    const dentistId = isStaff(req.user)
+    const doctorId = isStaff(req.user)
       ? clinicId(req.user)
       : req.user.role === "client"
-      ? req.user.dentist
+      ? req.user.doctor
       : null;
-    if (!dentistId) return res.json({ slots: [] });
+    if (!doctorId) return res.json({ slots: [] });
 
-    const q = { dentist: dentistId, status: { $in: ACTIVE } };
+    const q = { doctor: doctorId, status: { $in: ACTIVE } };
     const { from, to, exclude } = req.query;
     if (from || to) {
       q.date = {};
@@ -213,15 +213,15 @@ router.get("/booked", async (req, res) => {
     }
     if (exclude && mongoose.isValidObjectId(exclude)) q._id = { $ne: exclude };
 
-    const [appts, dentist] = await Promise.all([
+    const [appts, doctor] = await Promise.all([
       Appointment.find(q).select("date").lean(),
-      User.findById(dentistId).select("availability slotDuration dayOverrides").lean(),
+      User.findById(doctorId).select("availability slotDuration dayOverrides").lean(),
     ]);
     res.json({
       slots: appts.map((a) => a.date),
-      availability: dentist?.availability || [],
-      slotDuration: dentist?.slotDuration || 15,
-      dayOverrides: dentist?.dayOverrides || [],
+      availability: doctor?.availability || [],
+      slotDuration: doctor?.slotDuration || 15,
+      dayOverrides: doctor?.dayOverrides || [],
     });
   } catch (err) {
     console.error(err);
@@ -235,7 +235,7 @@ router.post("/", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can create appointments" });
     }
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
     const { client, date, reason, notes } = req.body;
     if (!client || !date) {
       return res.status(400).json({ message: "client and date are required" });
@@ -243,7 +243,7 @@ router.post("/", async (req, res) => {
     if (new Date(date).getTime() < Date.now()) {
       return res.status(400).json({ message: "Appointment cannot be in the past" });
     }
-    if (await slotConflict(dentistId, date)) {
+    if (await slotConflict(doctorId, date)) {
       return res.status(409).json({
         message: "Another appointment is already scheduled at this date and time.",
         code: "SLOT_TAKEN",
@@ -256,7 +256,7 @@ router.post("/", async (req, res) => {
       });
     }
     const appt = await Appointment.create({
-      dentist: dentistId,
+      doctor: doctorId,
       client,
       date,
       reason,
@@ -264,12 +264,12 @@ router.post("/", async (req, res) => {
     });
     const populated = await appt.populate([
       { path: "client", select: "name email phone managed guardian guardianName guardianEmail guardianPhone" },
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
     ]);
 
     // Notify the patient (or the guardian, for a managed child) + give staff a WhatsApp link
     const c = populated.client;
-    const dName = await dentistNameFor(req.user);
+    const dName = await doctorNameFor(req.user);
     const when = fmtWhen(date);
     const whose = c.managed ? `${c.name}'s` : "your";
     const body = `Dr. ${dName} scheduled ${whose} appointment on ${when}${
@@ -301,7 +301,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// POST /api/appointments/request  (client requests an appointment with their dentist)
+// POST /api/appointments/request  (client requests an appointment with their doctor)
 router.post("/request", async (req, res) => {
   try {
     if (req.user.role !== "client") {
@@ -316,7 +316,7 @@ router.post("/request", async (req, res) => {
     // Booking for self, or for a linked dependent (req.body.for = dependent id).
     let patientId = req.user._id;
     let patientName = req.user.name;
-    let dentistId = req.user.dentist;
+    let doctorId = req.user.doctor;
     if (req.body.for && String(req.body.for) !== String(req.user._id)) {
       const dep = await User.findOne({
         _id: req.body.for,
@@ -326,16 +326,16 @@ router.post("/request", async (req, res) => {
       if (!dep) return res.status(403).json({ message: "Not your dependent" });
       patientId = dep._id;
       patientName = dep.name;
-      dentistId = dep.dentist;
+      doctorId = dep.doctor;
     }
-    if (!dentistId) {
-      return res.status(400).json({ message: "You are not associated with a dentist yet." });
+    if (!doctorId) {
+      return res.status(400).json({ message: "You are not associated with a doctor yet." });
     }
 
-    const badSlot = await invalidSlotReason(dentistId, date);
+    const badSlot = await invalidSlotReason(doctorId, date);
     if (badSlot) return res.status(400).json({ message: badSlot, code: "INVALID_SLOT" });
 
-    if (await slotConflict(dentistId, date)) {
+    if (await slotConflict(doctorId, date)) {
       return res.status(409).json({
         message: "That slot was just taken. Please pick another time.",
         code: "SLOT_TAKEN",
@@ -349,7 +349,7 @@ router.post("/request", async (req, res) => {
     }
 
     const appt = await Appointment.create({
-      dentist: dentistId,
+      doctor: doctorId,
       client: patientId,
       date,
       reason,
@@ -357,16 +357,16 @@ router.post("/request", async (req, res) => {
     });
 
     const when = fmtWhen(date);
-    const dentist = await User.findById(dentistId).select("name email");
+    const doctor = await User.findById(doctorId).select("name email");
     const body = `${patientName} requested an appointment on ${when}${
       reason ? ` for ${reason}` : ""
     }.`;
-    await notifyClinic(dentistId, {
+    await notifyClinic(doctorId, {
       type: "appointment_requested",
       title: "New appointment request",
       body,
       url: "/appointments",
-      email: dentist?.email ? { to: dentist.email, greeting: `Hi Dr. ${dentist.name},\n\n` } : null,
+      email: doctor?.email ? { to: doctor.email, greeting: `Hi Dr. ${doctor.name},\n\n` } : null,
     });
 
     res.status(201).json({ appointment: appt });
@@ -388,12 +388,12 @@ router.patch("/:id/confirm", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can confirm requests" });
     }
-    const dentistId = clinicId(req.user);
-    const appt = await Appointment.findOne({ _id: req.params.id, dentist: dentistId, status: "pending" });
+    const doctorId = clinicId(req.user);
+    const appt = await Appointment.findOne({ _id: req.params.id, doctor: doctorId, status: "pending" });
     if (!appt) return res.status(404).json({ message: "Request not found" });
 
     // Make sure the slot wasn't taken by someone else since the request came in.
-    if (await slotConflict(dentistId, appt.date, appt._id)) {
+    if (await slotConflict(doctorId, appt.date, appt._id)) {
       return res.status(409).json({
         message: "That slot is already taken — decline this request or reschedule.",
         code: "SLOT_TAKEN",
@@ -413,11 +413,11 @@ router.patch("/:id/confirm", async (req, res) => {
     await appt.save();
     const populated = await appt.populate([
       { path: "client", select: "name email phone managed guardian guardianName guardianEmail" },
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
     ]);
 
     const c = populated.client;
-    const dName = await dentistNameFor(req.user);
+    const dName = await doctorNameFor(req.user);
     const when = fmtWhen(appt.date);
     const whose = c.managed ? `${c.name}'s` : "your";
     const t = clientNotifyTarget(c);
@@ -449,19 +449,19 @@ router.patch("/:id/decline", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can decline requests" });
     }
-    const dentistId = clinicId(req.user);
-    const appt = await Appointment.findOne({ _id: req.params.id, dentist: dentistId, status: "pending" });
+    const doctorId = clinicId(req.user);
+    const appt = await Appointment.findOne({ _id: req.params.id, doctor: doctorId, status: "pending" });
     if (!appt) return res.status(404).json({ message: "Request not found" });
 
     appt.status = "cancelled";
     await appt.save();
     const populated = await appt.populate([
       { path: "client", select: "name email phone managed guardian guardianName guardianEmail" },
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
     ]);
 
     const c = populated.client;
-    const dName = await dentistNameFor(req.user);
+    const dName = await doctorNameFor(req.user);
     const when = fmtWhen(appt.date);
     const whose = c.managed ? `${c.name}'s` : "your";
     const t = clientNotifyTarget(c);
@@ -486,10 +486,10 @@ router.put("/:id", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can update appointments" });
     }
-    const dentistId = clinicId(req.user);
+    const doctorId = clinicId(req.user);
     const { date, reason, notes, status, version } = req.body;
 
-    const current = await Appointment.findOne({ _id: req.params.id, dentist: dentistId });
+    const current = await Appointment.findOne({ _id: req.params.id, doctor: doctorId });
     if (!current) return res.status(404).json({ message: "Appointment not found" });
 
     // Optimistic concurrency: reject if the record changed since the client loaded it.
@@ -501,7 +501,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const nextStatus = status ?? current.status;
-    if (date && nextStatus === "scheduled" && (await slotConflict(dentistId, date, current._id))) {
+    if (date && nextStatus === "scheduled" && (await slotConflict(doctorId, date, current._id))) {
       return res.status(409).json({
         message: "Another appointment is already scheduled at this date and time.",
         code: "SLOT_TAKEN",
@@ -534,12 +534,12 @@ router.put("/:id", async (req, res) => {
 
     // Guard the write with the version we validated, bumping it atomically.
     const appt = await Appointment.findOneAndUpdate(
-      { _id: current._id, dentist: dentistId, __v: current.__v },
+      { _id: current._id, doctor: doctorId, __v: current.__v },
       { $set: set, $inc: { __v: 1 } },
       { new: true }
     )
       .populate("client", "name email phone managed guardian guardianName guardianEmail")
-      .populate("dentist", "name email");
+      .populate("doctor", "name email");
     if (!appt) {
       return res.status(409).json({
         message: "This appointment was just changed by someone else. Refresh and try again.",
@@ -550,7 +550,7 @@ router.put("/:id", async (req, res) => {
     // Tell the patient (or guardian, for a managed child) when staff move the time.
     if (dateChanged && appt.status === "scheduled") {
       const c = appt.client;
-      const dName = await dentistNameFor(req.user);
+      const dName = await doctorNameFor(req.user);
       const whose = c.managed ? `${c.name}'s` : "your";
       const t = clientNotifyTarget(c);
       await notifyUser(t.userId, {
@@ -595,10 +595,10 @@ router.patch("/:id/reschedule", async (req, res) => {
       return res.status(400).json({ message: "Only active appointments can be rescheduled." });
     }
 
-    const badSlot = await invalidSlotReason(appt.dentist, date);
+    const badSlot = await invalidSlotReason(appt.doctor, date);
     if (badSlot) return res.status(400).json({ message: badSlot, code: "INVALID_SLOT" });
 
-    if (await slotConflict(appt.dentist, date, appt._id)) {
+    if (await slotConflict(appt.doctor, date, appt._id)) {
       return res.status(409).json({
         message: "That slot is already taken. Please pick a different time.",
         code: "SLOT_TAKEN",
@@ -621,7 +621,7 @@ router.patch("/:id/reschedule", async (req, res) => {
     await appt.save();
 
     const populated = await appt.populate([
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
       { path: "client", select: "name" },
     ]);
     const when = fmtWhen(date);
@@ -630,13 +630,13 @@ router.patch("/:id/reschedule", async (req, res) => {
         ? `${populated.client.name} changed their requested appointment time to ${when}.`
         : `${populated.client.name} rescheduled their appointment to ${when}.`;
 
-    await notifyClinic(populated.dentist._id, {
+    await notifyClinic(populated.doctor._id, {
       type: "appointment_rescheduled",
       title: "Appointment rescheduled",
       body,
       url: "/appointments",
-      email: populated.dentist.email
-        ? { to: populated.dentist.email, greeting: `Hi Dr. ${populated.dentist.name},\n\n` }
+      email: populated.doctor.email
+        ? { to: populated.doctor.email, greeting: `Hi Dr. ${populated.doctor.name},\n\n` }
         : null,
     });
 
@@ -672,7 +672,7 @@ router.patch("/:id/cancel", async (req, res) => {
     await appt.save();
 
     const populated = await appt.populate([
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
       { path: "client", select: "name" },
     ]);
     const when = fmtWhen(appt.date);
@@ -680,13 +680,13 @@ router.patch("/:id/cancel", async (req, res) => {
       ? `${populated.client.name} withdrew their appointment request for ${when}.`
       : `${populated.client.name} cancelled their appointment on ${when}.`;
 
-    await notifyClinic(populated.dentist._id, {
+    await notifyClinic(populated.doctor._id, {
       type: "appointment_cancelled",
       title: "Appointment cancelled",
       body,
       url: "/appointments",
-      email: populated.dentist.email
-        ? { to: populated.dentist.email, greeting: `Hi Dr. ${populated.dentist.name},\n\n` }
+      email: populated.doctor.email
+        ? { to: populated.doctor.email, greeting: `Hi Dr. ${populated.doctor.name},\n\n` }
         : null,
     });
 
@@ -698,7 +698,7 @@ router.patch("/:id/cancel", async (req, res) => {
 });
 
 // PATCH /api/appointments/:id/arrival
-// The patient signals they're on the way / arrived; OR clinic staff (dentist or
+// The patient signals they're on the way / arrived; OR clinic staff (doctor or
 // assistant) mark a patient arrived on their behalf. Marking "arrived" stamps
 // arrivedAt, which starts the waiting-time counter shown on the clinic's
 // schedule (and, when the patient did it, on the patient's own screen).
@@ -720,7 +720,7 @@ router.patch("/:id/arrival", async (req, res) => {
 
     // Authorize: staff act on their own clinic; patients on their own appointment.
     if (staffActor) {
-      if (String(appt.dentist) !== String(clinicId(req.user))) {
+      if (String(appt.doctor) !== String(clinicId(req.user))) {
         return res.status(404).json({ message: "Appointment not found" });
       }
     } else if (req.user.role === "client") {
@@ -745,7 +745,7 @@ router.patch("/:id/arrival", async (req, res) => {
     appt.arrivalStatus = status;
     await appt.save();
     const populated = await appt.populate([
-      { path: "dentist", select: "name email" },
+      { path: "doctor", select: "name email" },
       { path: "client", select: "name" },
     ]);
 
@@ -757,13 +757,13 @@ router.patch("/:id/arrival", async (req, res) => {
         status === "arrived"
           ? `${populated.client.name} has arrived at the clinic for their ${when} appointment.`
           : `${populated.client.name} is on the way to the clinic (appointment ${when}).`;
-      await notifyClinic(populated.dentist._id, {
+      await notifyClinic(populated.doctor._id, {
         type: "appointment_arrival",
         title: status === "arrived" ? "Patient has arrived" : "Patient on the way",
         body,
         url: "/appointments",
-        email: populated.dentist.email
-          ? { to: populated.dentist.email, greeting: `Hi Dr. ${populated.dentist.name},\n\n` }
+        email: populated.doctor.email
+          ? { to: populated.doctor.email, greeting: `Hi Dr. ${populated.doctor.name},\n\n` }
           : null,
       });
     }
@@ -782,7 +782,7 @@ router.delete("/:id", async (req, res) => {
   }
   const appt = await Appointment.findOneAndDelete({
     _id: req.params.id,
-    dentist: clinicId(req.user),
+    doctor: clinicId(req.user),
   });
   if (!appt) return res.status(404).json({ message: "Appointment not found" });
   res.json({ message: "Deleted" });

@@ -22,8 +22,8 @@ router.post("/", async (req, res) => {
   try {
     const { name, dateOfBirth } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Name is required." });
-    if (!req.user.dentist) {
-      return res.status(400).json({ message: "Associate with a dentist first to add a dependent." });
+    if (!req.user.doctor) {
+      return res.status(400).json({ message: "Associate with a doctor first to add a dependent." });
     }
     const dep = await User.create({
       name: name.trim(),
@@ -35,11 +35,11 @@ router.post("/", async (req, res) => {
       guardianEmail: req.user.email,
       dateOfBirth: dateOfBirth || undefined,
       password: crypto.randomBytes(24).toString("hex"), // no usable login
-      dentist: req.user.dentist,
+      doctor: req.user.doctor,
     });
     await Association.create({
       client: dep._id,
-      dentist: req.user.dentist,
+      doctor: req.user.doctor,
       status: "approved",
       initiatedBy: "client",
       respondedAt: new Date(),

@@ -28,7 +28,7 @@ const followUpSchema = new mongoose.Schema(
 
 const treatmentSchema = new mongoose.Schema(
   {
-    dentist: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: "Appointment" },
     procedure: { type: String, required: true, trim: true },

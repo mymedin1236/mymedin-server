@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const appointmentSchema = new mongoose.Schema(
   {
-    dentist: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     date: { type: Date, required: true },
     reason: { type: String, trim: true, default: "" },
@@ -12,7 +12,7 @@ const appointmentSchema = new mongoose.Schema(
       default: "scheduled",
     },
     notes: { type: String },
-    // Patient travel status on the day (notifies the dentist).
+    // Patient travel status on the day (notifies the doctor).
     arrivalStatus: {
       type: String,
       enum: ["none", "on_the_way", "arrived"],
@@ -29,7 +29,7 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Make duplicate bookings impossible at the database level: a dentist can have
+// Make duplicate bookings impossible at the database level: a doctor can have
 // at most ONE scheduled appointment at a given instant. Even if two requests
 // race past the app-level "is this slot free?" check, the second insert/confirm
 // hits this unique index and fails with a duplicate-key (E11000) error, which
@@ -38,8 +38,8 @@ const appointmentSchema = new mongoose.Schema(
 // Partial (status: "scheduled") so cancelled / completed / no-show rows never
 // block re-booking the same slot later.
 appointmentSchema.index(
-  { dentist: 1, date: 1 },
-  { unique: true, partialFilterExpression: { status: "scheduled" }, name: "uniq_dentist_slot_scheduled" }
+  { doctor: 1, date: 1 },
+  { unique: true, partialFilterExpression: { status: "scheduled" }, name: "uniq_doctor_slot_scheduled" }
 );
 
 // Whenever the appointment time changes via a document save(), re-arm the

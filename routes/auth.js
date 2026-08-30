@@ -33,7 +33,7 @@ const signToken = (user, remember = true) =>
     expiresIn: remember ? process.env.JWT_EXPIRES_IN || "15d" : "1d",
   });
 
-// The UI shows "Dr. <name>", so strip a leading "Dr"/"Dr." the dentist may have typed.
+// The UI shows "Dr. <name>", so strip a leading "Dr"/"Dr." the doctor may have typed.
 const stripDrPrefix = (name = "") => name.replace(/^\s*dr\b\.?\s*/i, "").trim();
 
 // POST /api/auth/register
@@ -47,7 +47,7 @@ router.post("/register", async (req, res) => {
       phone,
       dateOfBirth,
       address,
-      // Dentist profile fields
+      // Doctor profile fields
       clinicName,
       about,
       specialization,
@@ -60,8 +60,8 @@ router.post("/register", async (req, res) => {
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "name, email, password, role are required" });
     }
-    if (!["dentist", "client", "vendor"].includes(role)) {
-      return res.status(400).json({ message: "role must be dentist, client, or vendor" });
+    if (!["doctor", "client", "vendor"].includes(role)) {
+      return res.status(400).json({ message: "role must be doctor, client, or vendor" });
     }
     if (password.length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters" });
@@ -75,19 +75,19 @@ router.post("/register", async (req, res) => {
       if (phoneExists) return res.status(409).json({ message: "Phone already registered" });
     }
 
-    // Build dentist-only profile data (incl. GeoJSON location from lat/lng) when registering as a dentist
-    const dentistFields = {};
-    if (role === "dentist") {
-      if (clinicName) dentistFields.clinicName = clinicName;
-      if (about) dentistFields.about = about;
-      if (specialization) dentistFields.specialization = specialization;
-      if (image) dentistFields.image = image;
+    // Build doctor-only profile data (incl. GeoJSON location from lat/lng) when registering as a doctor
+    const doctorFields = {};
+    if (role === "doctor") {
+      if (clinicName) doctorFields.clinicName = clinicName;
+      if (about) doctorFields.about = about;
+      if (specialization) doctorFields.specialization = specialization;
+      if (image) doctorFields.image = image;
       if (yearsOfExperience != null && yearsOfExperience !== "") {
-        dentistFields.yearsOfExperience = Number(yearsOfExperience);
+        doctorFields.yearsOfExperience = Number(yearsOfExperience);
       }
-      if (Array.isArray(availability)) dentistFields.availability = availability;
+      if (Array.isArray(availability)) doctorFields.availability = availability;
       if (latitude != null && longitude != null && latitude !== "" && longitude !== "") {
-        dentistFields.location = {
+        doctorFields.location = {
           type: "Point",
           coordinates: [Number(longitude), Number(latitude)],
         };
@@ -95,14 +95,14 @@ router.post("/register", async (req, res) => {
     }
 
     const user = await User.create({
-      name: role === "dentist" ? stripDrPrefix(name) : name,
+      name: role === "doctor" ? stripDrPrefix(name) : name,
       email,
       password,
       role,
       phone: trimmedPhone || undefined,
       dateOfBirth,
       address,
-      ...dentistFields,
+      ...doctorFields,
     });
     const token = signToken(user);
     res.status(201).json({ token, user });
@@ -308,7 +308,7 @@ router.put("/me", protect, async (req, res) => {
     const u = req.user;
     const b = req.body;
 
-    if (b.name != null) u.name = u.role === "dentist" ? stripDrPrefix(b.name) : b.name;
+    if (b.name != null) u.name = u.role === "doctor" ? stripDrPrefix(b.name) : b.name;
 
     if (b.email !== undefined) {
       const cleanEmail = b.email.trim().toLowerCase() || undefined;
@@ -342,12 +342,12 @@ router.put("/me", protect, async (req, res) => {
       if (b.companyName !== undefined) u.companyName = b.companyName;
     }
 
-    // Profile photo — only dentists and assistants can set/clear their own.
-    if (b.image !== undefined && (u.role === "dentist" || u.role === "assistant")) {
+    // Profile photo — only doctors and assistants can set/clear their own.
+    if (b.image !== undefined && (u.role === "doctor" || u.role === "assistant")) {
       u.image = b.image || undefined;
     }
 
-    if (u.role === "dentist") {
+    if (u.role === "doctor") {
       if (b.clinicName !== undefined) u.clinicName = b.clinicName;
       if (b.specialization !== undefined) u.specialization = b.specialization;
       if (b.about !== undefined) u.about = b.about;
@@ -381,9 +381,9 @@ router.put("/me", protect, async (req, res) => {
   }
 });
 
-// ---- Clinic settings (shared by the dentist and their assistants) ----
-// Clinic hours / slot length / location live on the clinic OWNER (dentist)
-// record. An assistant acts on behalf of that dentist, so both roles read and
+// ---- Clinic settings (shared by the doctor and their assistants) ----
+// Clinic hours / slot length / location live on the clinic OWNER (doctor)
+// record. An assistant acts on behalf of that doctor, so both roles read and
 // write the same clinic-owner document via clinicId().
 
 // GET /api/auth/clinic-settings -> the clinic's operational settings.
@@ -464,11 +464,11 @@ router.put("/clinic-settings", protect, requireStaff, async (req, res) => {
   }
 });
 
-// GET /api/auth/agreement — the clinic's agreement status. Dentist-only: the
+// GET /api/auth/agreement — the clinic's agreement status. Doctor-only: the
 // billing/agreement status is the owner's and is hidden from assistants.
 router.get("/agreement", protect, async (req, res) => {
   try {
-    if (req.user.role !== "dentist") {
+    if (req.user.role !== "doctor") {
       return res.status(403).json({ message: "Only the clinic owner can view the agreement." });
     }
     const owner = await User.findById(req.user._id)
@@ -486,10 +486,10 @@ router.get("/agreement", protect, async (req, res) => {
   }
 });
 
-// POST /api/auth/agreement/accept — dentist e-signs the service agreement.
+// POST /api/auth/agreement/accept — doctor e-signs the service agreement.
 router.post("/agreement/accept", protect, async (req, res) => {
   try {
-    if (req.user.role !== "dentist") {
+    if (req.user.role !== "doctor") {
       return res.status(403).json({ message: "Only the clinic owner can sign the agreement." });
     }
     const name = String(req.body.name || "").trim();

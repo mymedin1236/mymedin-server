@@ -14,7 +14,7 @@ export const connectDB = async () => {
   // Single database for all environments: MONGO_DB if set, otherwise the name
   // embedded in MONGO_URI. (No separate "-dev" database — local and production
   // both use whatever MONGO_URI points to.)
-  const dbName = process.env.MONGO_DB || dbNameFromUri(uri) || "dental-clinic";
+  const dbName = process.env.MONGO_DB || dbNameFromUri(uri) || "mymedin";
 
   await mongoose.connect(uri, dbName ? { dbName } : {});
   console.log(

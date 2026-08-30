@@ -35,7 +35,7 @@ async function sendWindow({ flag, ms, lead }) {
     date: { $gt: now, $lte: cutoff },
   })
     .populate("client", "name email managed guardian guardianName guardianEmail")
-    .populate("dentist", "name");
+    .populate("doctor", "name");
 
   for (const appt of due) {
     const c = appt.client;
@@ -46,7 +46,7 @@ async function sendWindow({ flag, ms, lead }) {
     }
     const when = fmtWhen(appt.date);
     const who = c.managed ? `${c.name}'s` : "your";
-    const body = `Reminder: ${who} appointment with Dr. ${appt.dentist?.name} is ${lead} (${when}).`;
+    const body = `Reminder: ${who} appointment with Dr. ${appt.doctor?.name} is ${lead} (${when}).`;
 
     // For a managed dependent, notify the linked guardian's account (if any);
     // otherwise the patient. Always email the right contact.

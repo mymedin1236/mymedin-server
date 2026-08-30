@@ -9,7 +9,7 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 8 },
     role: {
       type: String,
-      enum: ["dentist", "client", "vendor", "assistant", "admin"],
+      enum: ["doctor", "client", "vendor", "assistant", "admin"],
       required: true,
     },
     // Client-only fields
@@ -25,8 +25,8 @@ const userSchema = new mongoose.Schema(
     // When the guardian is a registered patient, link to their account so they
     // can view/manage this dependent and receive its notifications in-app/push.
     guardian: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    // Link: a client may be created by / belong to a dentist
-    dentist: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    // Link: a client may be created by / belong to a doctor
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
     // When the patient was last reminded about an outstanding treatment balance,
     // so the reminder job only fires every 15 days per patient.
@@ -36,22 +36,22 @@ const userSchema = new mongoose.Schema(
     // false = browser tab, undefined = unknown. Updated on login + each app open.
     lastLoginPwa: { type: Boolean },
 
-    // Profile photo (Cloudinary secure URL) — shown on the dentist's public profile.
+    // Profile photo (Cloudinary secure URL) — shown on the doctor's public profile.
     image: { type: String, trim: true },
 
-    // Dentist-only profile fields
+    // Doctor-only profile fields
     clinicName: { type: String, trim: true },
     about: { type: String, trim: true },
     specialization: { type: String, trim: true },
     yearsOfExperience: { type: Number, min: 0 },
     // Directory / SEO fields (optional). Used to build public, search-indexable
-    // dentist profile pages and city listings. Safe to leave empty — profiles
+    // doctor profile pages and city listings. Safe to leave empty — profiles
     // still render from clinicName, specialization, hours and ratings.
     city: { type: String, trim: true },
     area: { type: String, trim: true },
     services: { type: [String], default: undefined },
     slug: { type: String, trim: true },
-    // GeoJSON point for "nearest dentist" discovery: coordinates = [longitude, latitude]
+    // GeoJSON point for "nearest doctor" discovery: coordinates = [longitude, latitude]
     location: {
       type: { type: String, enum: ["Point"], default: undefined },
       coordinates: { type: [Number], default: undefined },
@@ -65,7 +65,7 @@ const userSchema = new mongoose.Schema(
         end: { type: String },
       },
     ],
-    // Length of a single appointment slot in minutes (dentist-configurable).
+    // Length of a single appointment slot in minutes (doctor-configurable).
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },
     // Per-date exceptions to the weekly availability, e.g. the doctor leaving
@@ -93,7 +93,7 @@ const userSchema = new mongoose.Schema(
     resetTokenHash: { type: String },
     resetTokenExpires: { type: Date },
 
-    // E-signed service agreement (dentist accepts the terms in-app instead of on
+    // E-signed service agreement (doctor accepts the terms in-app instead of on
     // paper). Records who signed, when, and which version of the terms.
     agreement: {
       acceptedAt: { type: Date },
@@ -111,7 +111,7 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Geospatial index powers $near queries for nearest-dentist discovery
+// Geospatial index powers $near queries for nearest-doctor discovery
 userSchema.index({ location: "2dsphere" });
 
 // Avoid storing empty-string phone/email, which would violate the sparse unique indexes

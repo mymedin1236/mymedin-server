@@ -51,17 +51,17 @@ function monthsBetween(startYM, endYM) {
 }
 
 // Create any invoices that are due but missing, for every clinic with a billing
-// start month. Idempotent (unique dentist+month index), so it can run often and
+// start month. Idempotent (unique doctor+month index), so it can run often and
 // safely backfills months the server may have missed.
 export async function generateInvoicesOnce() {
   const today = clinicToday();
-  const dentists = await User.find({
-    role: "dentist",
+  const doctors = await User.find({
+    role: "doctor",
     "billing.startMonth": { $nin: [null, ""] },
   }).select("_id billing");
 
   let created = 0;
-  for (const d of dentists) {
+  for (const d of doctors) {
     const start = d.billing?.startMonth;
     if (!start) continue;
     const fee = Number(d.billing?.monthlyFee) || DEFAULT_MONTHLY_FEE;
@@ -69,10 +69,10 @@ export async function generateInvoicesOnce() {
     for (const month of monthsBetween(start, today.ym)) {
       // Don't issue the current month before the 5th; past months always issue.
       if (month === today.ym && today.day < ISSUE_DAY) continue;
-      if (await Invoice.exists({ dentist: d._id, month })) continue;
+      if (await Invoice.exists({ doctor: d._id, month })) continue;
       try {
         await Invoice.create({
-          dentist: d._id,
+          doctor: d._id,
           month,
           amount: fee,
           issueDate: dateForDay(month, ISSUE_DAY),

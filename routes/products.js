@@ -8,7 +8,7 @@ const router = express.Router();
 router.use(protect);
 
 // GET /api/products?search=&category=&mine=true
-// Dentists browse the catalog; vendors can pass mine=true to get their own listings.
+// Doctors browse the catalog; vendors can pass mine=true to get their own listings.
 router.get("/", async (req, res) => {
   try {
     const { search, category, mine } = req.query;

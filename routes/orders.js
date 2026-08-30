@@ -7,10 +7,10 @@ const router = express.Router();
 
 router.use(protect);
 
-// POST /api/orders (dentist) -> place an order from a cart.
+// POST /api/orders (doctor) -> place an order from a cart.
 // Body: { items: [{ product, quantity }], notes }
 // A cart may span multiple vendors, so we split it into one order per vendor.
-router.post("/", requireRole("dentist"), async (req, res) => {
+router.post("/", requireRole("doctor"), async (req, res) => {
   try {
     const { items, notes } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
@@ -45,7 +45,7 @@ router.post("/", requireRole("dentist"), async (req, res) => {
     for (const [vendorId, vendorItems] of byVendor) {
       const total = vendorItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
       const order = await Order.create({
-        dentist: req.user._id,
+        doctor: req.user._id,
         vendor: vendorId,
         items: vendorItems,
         total,
@@ -61,16 +61,16 @@ router.post("/", requireRole("dentist"), async (req, res) => {
   }
 });
 
-// GET /api/orders -> dentist sees orders they placed; vendor sees orders for their products
+// GET /api/orders -> doctor sees orders they placed; vendor sees orders for their products
 router.get("/", async (req, res) => {
   try {
     const filter =
       req.user.role === "vendor"
         ? { vendor: req.user._id }
-        : { dentist: req.user._id };
+        : { doctor: req.user._id };
     const orders = await Order.find(filter)
       .populate("vendor", "name companyName")
-      .populate("dentist", "name clinicName")
+      .populate("doctor", "name clinicName")
       .sort({ createdAt: -1 });
     res.json(orders);
   } catch (err) {

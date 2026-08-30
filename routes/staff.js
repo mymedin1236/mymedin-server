@@ -5,18 +5,18 @@ import { protect, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Only the dentist (clinic owner) manages their staff — not assistants themselves.
-router.use(protect, requireRole("dentist"));
+// Only the doctor (clinic owner) manages their staff — not assistants themselves.
+router.use(protect, requireRole("doctor"));
 
-// GET /api/staff -> assistants belonging to this dentist
+// GET /api/staff -> assistants belonging to this doctor
 router.get("/", async (req, res) => {
-  const staff = await User.find({ role: "assistant", dentist: req.user._id })
+  const staff = await User.find({ role: "assistant", doctor: req.user._id })
     .select("name email phone createdAt")
     .sort({ createdAt: -1 });
   res.json(staff);
 });
 
-// POST /api/staff -> create an assistant account linked to this dentist
+// POST /api/staff -> create an assistant account linked to this doctor
 router.post("/", async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -46,7 +46,7 @@ router.post("/", async (req, res) => {
       password,
       role: "assistant",
       phone: trimmedPhone,
-      dentist: req.user._id,
+      doctor: req.user._id,
     });
 
     const loginUrl =
@@ -94,7 +94,7 @@ router.put("/:id", async (req, res) => {
     const assistant = await User.findOne({
       _id: req.params.id,
       role: "assistant",
-      dentist: req.user._id,
+      doctor: req.user._id,
     });
     if (!assistant) return res.status(404).json({ message: "Assistant not found" });
 
@@ -119,7 +119,7 @@ router.delete("/:id", async (req, res) => {
   const assistant = await User.findOneAndDelete({
     _id: req.params.id,
     role: "assistant",
-    dentist: req.user._id,
+    doctor: req.user._id,
   });
   if (!assistant) return res.status(404).json({ message: "Assistant not found" });
   res.json({ message: "Deleted" });

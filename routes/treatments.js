@@ -8,7 +8,7 @@ import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
 const router = express.Router();
 router.use(protect);
 
-const isStaff = (user) => user.role === "dentist" || user.role === "assistant";
+const isStaff = (user) => user.role === "doctor" || user.role === "assistant";
 
 const money = (n) => `Rs ${Math.round(Number(n) || 0).toLocaleString("en-US")}`;
 
@@ -28,8 +28,8 @@ const capFirst = (s) => {
 async function notifyPaymentReceived(tr, amount, actor) {
   try {
     if (!amount || amount <= 0) return;
-    const dentist = await User.findById(tr.dentist).select("name").catch(() => null);
-    const drName = dentist?.name ? `Dr. ${dentist.name}` : "your dentist";
+    const doctor = await User.findById(tr.doctor).select("name").catch(() => null);
+    const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const settled = tr.balance <= 0;
 
     // Patient notification.
@@ -47,13 +47,13 @@ async function notifyPaymentReceived(tr, amount, actor) {
 
     // When an ASSISTANT collected the payment, notify the doctor (clinic owner)
     // so he's aware of money collected on his behalf.
-    if (actor?.role === "assistant" && String(actor._id) !== String(tr.dentist)) {
+    if (actor?.role === "assistant" && String(actor._id) !== String(tr.doctor)) {
       const patient = await User.findById(tr.client).select("name").catch(() => null);
       const patientName = patient?.name || "a patient";
       const staffBody =
         `${actor.name} collected ${money(amount)} from ${patientName} for ${tr.procedure}. ` +
         (settled ? "Balance is now cleared." : `Remaining balance: ${money(tr.balance)}.`);
-      await notifyUser(tr.dentist, {
+      await notifyUser(tr.doctor, {
         type: "payment_collected",
         title: "Payment collected",
         body: staffBody,
@@ -84,7 +84,7 @@ router.get("/", async (req, res) => {
   const { client } = req.query;
   let filter;
   if (isStaff(req.user)) {
-    filter = { dentist: clinicId(req.user), ...(client ? { client } : {}) };
+    filter = { doctor: clinicId(req.user), ...(client ? { client } : {}) };
   } else if (client && String(client) !== String(req.user._id)) {
     // A guardian may view a linked dependent's history.
     const dep = await User.findOne({ _id: client, managed: true, guardian: req.user._id }).select("_id");
@@ -96,7 +96,7 @@ router.get("/", async (req, res) => {
 
   const treatments = await Treatment.find(filter)
     .populate("client", "name email")
-    .populate("dentist", "name email")
+    .populate("doctor", "name email")
     .sort({ date: -1 });
   res.json(treatments);
 });
@@ -107,9 +107,9 @@ router.get("/", async (req, res) => {
 router.get("/outstanding", async (req, res) => {
   try {
     if (!isStaff(req.user)) return res.status(403).json({ message: "Staff only" });
-    const dentistId = new mongoose.Types.ObjectId(String(clinicId(req.user)));
+    const doctorId = new mongoose.Types.ObjectId(String(clinicId(req.user)));
     const rows = await Treatment.aggregate([
-      { $match: { dentist: dentistId } },
+      { $match: { doctor: doctorId } },
       { $addFields: { paidAmount: { $sum: "$payments.amount" } } },
       { $addFields: { outstanding: { $subtract: [{ $ifNull: ["$cost", 0] }, "$paidAmount"] } } },
       { $match: { outstanding: { $gt: 0 } } },
@@ -149,7 +149,7 @@ router.post("/:id/follow-up", async (req, res) => {
     tr.followUps.push({ message, status: "open" });
     await tr.save();
 
-    await notifyClinic(tr.dentist, {
+    await notifyClinic(tr.doctor, {
       type: "treatment_followup",
       title: `${patientName} reported an issue`,
       body: `${tr.procedure}: ${message}`,
@@ -166,7 +166,7 @@ router.post("/:id/follow-up", async (req, res) => {
 router.put("/:id/follow-up/:fid/resolve", async (req, res) => {
   try {
     if (!isStaff(req.user)) return res.status(403).json({ message: "Staff only" });
-    const tr = await Treatment.findOne({ _id: req.params.id, dentist: clinicId(req.user) });
+    const tr = await Treatment.findOne({ _id: req.params.id, doctor: clinicId(req.user) });
     if (!tr) return res.status(404).json({ message: "Treatment not found" });
     const f = tr.followUps.id(req.params.fid);
     if (!f) return res.status(404).json({ message: "Report not found" });
@@ -179,7 +179,7 @@ router.put("/:id/follow-up/:fid/resolve", async (req, res) => {
   }
 });
 
-// POST /api/treatments (dentist)
+// POST /api/treatments (doctor)
 router.post("/", async (req, res) => {
   try {
     if (!isStaff(req.user)) {
@@ -216,7 +216,7 @@ router.post("/", async (req, res) => {
 
     // Duplicate guard. Two failure modes:
     //  (a) a rapid double-submit / network retry from ONE device, and
-    //  (b) two staff (dentist + assistant, on separate phones) both recording the
+    //  (b) two staff (doctor + assistant, on separate phones) both recording the
     //      SAME treatment for a patient without seeing the other's entry.
     // We look for an existing treatment for this patient with the same procedure,
     // cost and tooth ON THE SAME DAY. A very recent match is a retry (return it
@@ -228,7 +228,7 @@ router.post("/", async (req, res) => {
     const dayEnd = new Date(dayStart);
     dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
     const existing = await Treatment.findOne({
-      dentist: clinicId(req.user),
+      doctor: clinicId(req.user),
       client,
       procedure: procedureClean,
       cost: total,
@@ -248,7 +248,7 @@ router.post("/", async (req, res) => {
     }
 
     const tr = await Treatment.create({
-      dentist: clinicId(req.user),
+      doctor: clinicId(req.user),
       client,
       appointment,
       procedure: procedureClean,
@@ -274,7 +274,7 @@ router.put("/:id", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can update treatments" });
     }
-    const tr = await Treatment.findOne({ _id: req.params.id, dentist: clinicId(req.user) });
+    const tr = await Treatment.findOne({ _id: req.params.id, doctor: clinicId(req.user) });
     if (!tr) return res.status(404).json({ message: "Treatment not found" });
     if (req.body.version !== undefined && Number(req.body.version) !== tr.__v) {
       return res.status(409).json({
@@ -353,7 +353,7 @@ router.post("/:id/payments", async (req, res) => {
     if (amount > 0 && !["cash", "online"].includes(method)) {
       return res.status(400).json({ message: "Select how the payment was collected (cash or online)." });
     }
-    const tr = await Treatment.findOne({ _id: req.params.id, dentist: clinicId(req.user) });
+    const tr = await Treatment.findOne({ _id: req.params.id, doctor: clinicId(req.user) });
     if (!tr) return res.status(404).json({ message: "Treatment not found" });
 
     if (amount > tr.balance) {
@@ -378,7 +378,7 @@ router.put("/:id/payments/:paymentId", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can edit payments" });
     }
-    const tr = await Treatment.findOne({ _id: req.params.id, dentist: clinicId(req.user) });
+    const tr = await Treatment.findOne({ _id: req.params.id, doctor: clinicId(req.user) });
     if (!tr) return res.status(404).json({ message: "Treatment not found" });
     const pay = tr.payments.id(req.params.paymentId);
     if (!pay) return res.status(404).json({ message: "Payment not found" });
@@ -420,7 +420,7 @@ router.delete("/:id/payments/:paymentId", async (req, res) => {
     if (!isStaff(req.user)) {
       return res.status(403).json({ message: "Only clinic staff can delete payments" });
     }
-    const tr = await Treatment.findOne({ _id: req.params.id, dentist: clinicId(req.user) });
+    const tr = await Treatment.findOne({ _id: req.params.id, doctor: clinicId(req.user) });
     if (!tr) return res.status(404).json({ message: "Treatment not found" });
     const pay = tr.payments.id(req.params.paymentId);
     if (!pay) return res.status(404).json({ message: "Payment not found" });
@@ -441,7 +441,7 @@ router.delete("/:id", async (req, res) => {
   }
   const tr = await Treatment.findOneAndDelete({
     _id: req.params.id,
-    dentist: clinicId(req.user),
+    doctor: clinicId(req.user),
   });
   if (!tr) return res.status(404).json({ message: "Treatment not found" });
   res.json({ message: "Deleted" });

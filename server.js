@@ -12,7 +12,7 @@ import staffRoutes from "./routes/staff.js";
 import familyRoutes from "./routes/family.js";
 import appointmentsRoutes from "./routes/appointments.js";
 import treatmentsRoutes from "./routes/treatments.js";
-import dentistsRoutes from "./routes/dentists.js";
+import doctorsRoutes from "./routes/doctors.js";
 import productsRoutes from "./routes/products.js";
 import ordersRoutes from "./routes/orders.js";
 import financesRoutes from "./routes/finances.js";
@@ -56,7 +56,9 @@ const allowedOrigins = (process.env.CLIENT_ORIGIN || "")
 // Also allow this project's own Vercel deployments — the production alias,
 // git/preview builds, and named test builds (e.g. dental-app-client-test) —
 // so testing URLs work without reconfiguring CLIENT_ORIGIN each time. Scoped to
-// the dental-app-client* subdomain only (not all of *.vercel.app).
+// the dental-app-client* subdomain only (not all of *.vercel.app). NOTE: this is
+// the actual Vercel project slug (infra), unrelated to the app's display brand —
+// update it only if/when the Vercel project itself is renamed.
 const VERCEL_PROJECT_ORIGIN = /^https:\/\/dental-app-client[a-z0-9-]*\.vercel\.app$/;
 
 app.use(
@@ -121,7 +123,7 @@ app.use("/api/staff", staffRoutes);
 app.use("/api/family", familyRoutes);
 app.use("/api/appointments", appointmentsRoutes);
 app.use("/api/treatments", treatmentsRoutes);
-app.use("/api/dentists", dentistsRoutes);
+app.use("/api/doctors", doctorsRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/orders", ordersRoutes);
 app.use("/api/finances", financesRoutes);

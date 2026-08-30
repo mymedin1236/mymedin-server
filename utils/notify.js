@@ -3,13 +3,13 @@ import User from "../models/User.js";
 import { sendPush } from "./push.js";
 import { sendMail } from "./mailer.js";
 
-// Notify a whole clinic — the dentist AND all of their assistants — so staff
-// see every clinic-facing notification the dentist gets (in-app + web push).
-// Email (when provided) goes to the dentist only.
-export async function notifyClinic(dentistId, { type, title, body, url, email }) {
-  let recipients = [String(dentistId)];
+// Notify a whole clinic — the doctor AND all of their assistants — so staff
+// see every clinic-facing notification the doctor gets (in-app + web push).
+// Email (when provided) goes to the doctor only.
+export async function notifyClinic(doctorId, { type, title, body, url, email }) {
+  let recipients = [String(doctorId)];
   try {
-    const assistants = await User.find({ role: "assistant", dentist: dentistId }).select("_id");
+    const assistants = await User.find({ role: "assistant", doctor: doctorId }).select("_id");
     recipients = [...new Set([...recipients, ...assistants.map((a) => String(a._id))])];
   } catch (e) {
     console.error("[notifyClinic] assistant lookup:", e?.message);

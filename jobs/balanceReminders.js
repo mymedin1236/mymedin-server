@@ -22,7 +22,7 @@ export async function runBalanceRemindersOnce() {
     { $addFields: { paidAmount: { $sum: "$payments.amount" } } },
     { $addFields: { outstanding: { $subtract: [{ $ifNull: ["$cost", 0] }, "$paidAmount"] } } },
     { $match: { outstanding: { $gt: 0 } } },
-    { $group: { _id: "$client", total: { $sum: "$outstanding" }, dentist: { $first: "$dentist" } } },
+    { $group: { _id: "$client", total: { $sum: "$outstanding" }, doctor: { $first: "$doctor" } } },
   ]);
 
   let sent = 0;
@@ -40,8 +40,8 @@ export async function runBalanceRemindersOnce() {
       continue;
     }
 
-    const dentist = row.dentist ? await User.findById(row.dentist).select("name") : null;
-    const drName = dentist?.name ? `Dr. ${dentist.name}` : "your dentist";
+    const doctor = row.doctor ? await User.findById(row.doctor).select("name") : null;
+    const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const whose = client.managed ? `${client.name}'s` : "your";
     const title = "Outstanding balance";
     const body = `You have an outstanding balance of ${money(row.total)} on ${whose} dental treatment with ${drName}. Please clear it at your next visit.`;

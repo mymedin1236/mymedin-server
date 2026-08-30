@@ -7,19 +7,19 @@ import { protect, requireRole, clinicId } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Resolve the owning dentist's display name (assistants act on behalf of the dentist).
-const dentistNameFor = async (reqUser, dentistId) =>
+// Resolve the owning doctor's display name (assistants act on behalf of the doctor).
+const doctorNameFor = async (reqUser, doctorId) =>
   (reqUser.role === "assistant"
-    ? (await User.findById(dentistId).select("name"))?.name
+    ? (await User.findById(doctorId).select("name"))?.name
     : reqUser.name) || reqUser.name;
 
-// All routes here require authenticated clinic staff (dentist or their assistant)
-router.use(protect, requireRole("dentist", "assistant"));
+// All routes here require authenticated clinic staff (doctor or their assistant)
+router.use(protect, requireRole("doctor", "assistant"));
 
 // GET /api/clients  -> list clients associated with THIS clinic
 router.get("/", async (req, res) => {
   const { search, managed } = req.query;
-  const filter = { role: "client", dentist: clinicId(req.user) };
+  const filter = { role: "client", doctor: clinicId(req.user) };
   // Split adult patients vs managed dependents (children) when requested.
   if (managed === "true") filter.managed = true;
   else if (managed === "false") filter.managed = { $ne: true };
@@ -36,11 +36,11 @@ router.get("/", async (req, res) => {
   res.json(clients);
 });
 
-// POST /api/clients -> create a new client record (dentist creating on behalf of client)
+// POST /api/clients -> create a new client record (doctor creating on behalf of client)
 router.post("/", async (req, res) => {
   try {
     const { name, email, password, phone, dateOfBirth } = req.body;
-    const owningDentistId = clinicId(req.user);
+    const owningDoctorId = clinicId(req.user);
 
     // --- Managed (dependent) patient: a child with no own login; contact the guardian. ---
     if (req.body.managed) {
@@ -62,17 +62,17 @@ router.post("/", async (req, res) => {
         guardianEmail: gEmail,
         dateOfBirth,
         password: crypto.randomBytes(24).toString("hex"), // random → no usable login
-        dentist: owningDentistId,
+        doctor: owningDoctorId,
       });
       await Association.create({
         client: child._id,
-        dentist: owningDentistId,
+        doctor: owningDoctorId,
         status: "approved",
-        initiatedBy: "dentist",
+        initiatedBy: "doctor",
         respondedAt: new Date(),
       });
 
-      const dName = await dentistNameFor(req.user, owningDentistId);
+      const dName = await doctorNameFor(req.user, owningDoctorId);
       const shareMessage =
         `Hi ${gName}, Dr. ${dName} added ${name.trim()} as a patient at the clinic. ` +
         `We'll reach you on this number/email about ${name.trim()}'s appointments and reminders.`;
@@ -117,24 +117,24 @@ router.post("/", async (req, res) => {
       role: "client",
       phone: trimmedPhone,
       dateOfBirth,
-      dentist: owningDentistId,
+      doctor: owningDoctorId,
     });
 
     // Record the (already-approved) association created by the clinic
     await Association.create({
       client: client._id,
-      dentist: owningDentistId,
+      doctor: owningDoctorId,
       status: "approved",
-      initiatedBy: "dentist",
+      initiatedBy: "doctor",
       respondedAt: new Date(),
     });
 
-    // The credentials message should name the dentist, even if an assistant created the account.
+    // The credentials message should name the doctor, even if an assistant created the account.
     const owner =
       req.user.role === "assistant"
-        ? await User.findById(owningDentistId).select("name")
+        ? await User.findById(owningDoctorId).select("name")
         : req.user;
-    const dentistName = owner?.name || req.user.name;
+    const doctorName = owner?.name || req.user.name;
 
     // Build shareable login credentials and email them to the client
     const loginUrl =
@@ -143,7 +143,7 @@ router.post("/", async (req, res) => {
         .trim()
         .replace(/\/+$/, "") + "/login";
     const shareMessage =
-      `Hi ${name}, Dr. ${dentistName} created your MyMedin account.\n\n` +
+      `Hi ${name}, Dr. ${doctorName} created your MyMedin account.\n\n` +
       `Login: ${loginUrl}\n` +
       (cleanEmail ? `Email: ${cleanEmail}\n` : `Phone: ${trimmedPhone}\n`) +
       `Password: ${password}\n\n` +
@@ -159,7 +159,7 @@ router.post("/", async (req, res) => {
       }).catch((e) => console.error("creds email failed:", e?.message));
     }
 
-    // Return the client plus credentials so the dentist can copy / share via WhatsApp
+    // Return the client plus credentials so the doctor can copy / share via WhatsApp
     res.status(201).json({
       client,
       credentials: { email: cleanEmail || "", phone: trimmedPhone || "", password },
@@ -176,7 +176,7 @@ router.get("/:id", async (req, res) => {
   const client = await User.findOne({
     _id: req.params.id,
     role: "client",
-    dentist: clinicId(req.user),
+    doctor: clinicId(req.user),
   });
   if (!client) return res.status(404).json({ message: "Client not found" });
   res.json(client);
@@ -189,7 +189,7 @@ router.put("/:id", async (req, res) => {
     const existing = await User.findOne({
       _id: req.params.id,
       role: "client",
-      dentist: clinicId(req.user),
+      doctor: clinicId(req.user),
     });
     if (!existing) return res.status(404).json({ message: "Client not found" });
 
@@ -226,7 +226,7 @@ router.put("/:id", async (req, res) => {
       : { $set: update, $unset: { phone: "" } };
 
     const client = await User.findOneAndUpdate(
-      { _id: req.params.id, role: "client", dentist: clinicId(req.user) },
+      { _id: req.params.id, role: "client", doctor: clinicId(req.user) },
       ops,
       { new: true }
     );
@@ -248,7 +248,7 @@ router.post("/:id/reset-password", async (req, res) => {
     const client = await User.findOne({
       _id: req.params.id,
       role: "client",
-      dentist: clinicId(req.user),
+      doctor: clinicId(req.user),
     });
     if (!client) return res.status(404).json({ message: "Patient not found" });
 
@@ -282,7 +282,7 @@ router.delete("/:id", async (req, res) => {
   const client = await User.findOneAndDelete({
     _id: req.params.id,
     role: "client",
-    dentist: clinicId(req.user),
+    doctor: clinicId(req.user),
   });
   if (!client) return res.status(404).json({ message: "Client not found" });
   res.json({ message: "Deleted" });

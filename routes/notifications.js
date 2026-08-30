@@ -67,7 +67,7 @@ router.delete("/", async (req, res) => {
 
 // POST /api/notifications/:id/acknowledge
 // The patient acknowledges an appointment notification ("I've seen it"), which
-// notifies the clinic (dentist + assistants). Idempotent.
+// notifies the clinic (doctor + assistants). Idempotent.
 router.post("/:id/acknowledge", async (req, res) => {
   try {
     const n = await Notification.findOne({ _id: req.params.id, user: req.user._id });
@@ -88,7 +88,7 @@ router.post("/:id/acknowledge", async (req, res) => {
       : null;
     if (appt) {
       const patientName = appt.client?.name || req.user.name || "The patient";
-      await notifyClinic(appt.dentist, {
+      await notifyClinic(appt.doctor, {
         type: "appointment_acknowledged",
         title: "Appointment acknowledged",
         body: `${patientName} has seen their appointment scheduled for ${fmtWhen(appt.date)}.`,

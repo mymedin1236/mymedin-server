@@ -5,7 +5,7 @@ const router = express.Router();
 
 // POST /api/uploads/avatar  { image: "data:image/jpeg;base64,..." } -> { url }
 //
-// Public on purpose: a dentist uploads their photo during registration, before an
+// Public on purpose: a doctor uploads their photo during registration, before an
 // account (and token) exists. The client crops/zooms to a small square first, so
 // the payload is modest. We re-process on Cloudinary's side to a 512×512 square as
 // a safety net and to normalise format/quality.
