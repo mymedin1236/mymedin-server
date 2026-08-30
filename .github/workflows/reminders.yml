@@ -1,0 +1,53 @@
+name: Appointment reminders
+
+# Triggers the appointment-reminder check on a schedule, independent of whether
+# the Render instance is awake. Also runnable manually from the Actions tab.
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes (UTC)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        run: |
+          if [ -z "${{ secrets.API_BASE_URL }}" ]; then
+            echo "::error::Repository secret API_BASE_URL is not set (e.g. https://your-app.onrender.com)."
+            exit 1
+          fi
+          if [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "::error::Repository secret CRON_SECRET is not set (it must match the server's CRON_SECRET env var)."
+            exit 1
+          fi
+
+      - name: Trigger reminder run
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # Trim any trailing slash so we don't build ".../api//api".
+          url="${API_BASE_URL%/}/api/cron/run-reminders"
+          echo "POST $url"
+          code=000
+          # Render's free tier sleeps when idle; retry to absorb a cold start (~up to 2 min).
+          for attempt in 1 2 3 4; do
+            code=$(curl -sS -o /tmp/body.txt -w "%{http_code}" \
+              --connect-timeout 15 --max-time 90 \
+              -X POST "$url" -H "x-cron-secret: $CRON_SECRET" || echo "000")
+            echo "Attempt $attempt -> HTTP $code"
+            echo "Response body: $(cat /tmp/body.txt 2>/dev/null)"
+            if [ "$code" = "200" ]; then
+              echo "Reminder run OK."
+              exit 0
+            fi
+            if [ "$code" = "401" ]; then
+              echo "::error::401 Unauthorized — the CRON_SECRET in GitHub does not match the server's CRON_SECRET env var on Render."
+              exit 1
+            fi
+            echo "Retrying in 15s (server may be cold-starting)…"
+            sleep 15
+          done
+          echo "::error::Reminder trigger failed after retries (last HTTP $code). Check API_BASE_URL and that the Render service is deployed."
+          exit 1
