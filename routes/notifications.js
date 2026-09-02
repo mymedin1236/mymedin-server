@@ -1,7 +1,8 @@
 import express from "express";
 import Notification from "../models/Notification.js";
 import Appointment from "../models/Appointment.js";
-import { protect } from "../middleware/auth.js";
+import Association from "../models/Association.js";
+import { protect, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 
 const router = express.Router();
@@ -20,15 +21,21 @@ const fmtWhen = (d) =>
 
 // GET /api/notifications?limit=50 -> notifications + unread count + total.
 // `limit` lets the client page back through older notifications ("Load older").
+// For clinic staff, also returns pending association/appointment request counts
+// (for the "Patients"/"Appointments" nav badges) — kept separate from unread
+// notifications since those clear on approval/confirmation, not on being read.
 router.get("/", async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
-    const [items, unreadCount, total] = await Promise.all([
+    const isStaff = req.user.role === "doctor" || req.user.role === "assistant";
+    const [items, unreadCount, total, associationRequests, appointmentRequests] = await Promise.all([
       Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(limit),
       Notification.countDocuments({ user: req.user._id, read: false }),
       Notification.countDocuments({ user: req.user._id }),
+      isStaff ? Association.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
+      isStaff ? Appointment.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
     ]);
-    res.json({ items, unreadCount, total });
+    res.json({ items, unreadCount, total, associationRequests, appointmentRequests });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
