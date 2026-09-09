@@ -5,11 +5,11 @@ import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
-import { protect, clinicId } from "../middleware/auth.js";
+import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 
 const router = express.Router();
-router.use(protect);
+router.use(protect, resolveClinic);
 
 const isStaff = (user) => user.role === "doctor" || user.role === "assistant";
 

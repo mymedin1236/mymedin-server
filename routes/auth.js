@@ -3,7 +3,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import LoginEvent from "../models/LoginEvent.js";
-import { protect, requireStaff, clinicId } from "../middleware/auth.js";
+import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
 
 const router = express.Router();
@@ -60,8 +60,8 @@ router.post("/register", async (req, res) => {
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "name, email, password, role are required" });
     }
-    if (!["doctor", "client", "vendor"].includes(role)) {
-      return res.status(400).json({ message: "role must be doctor, client, or vendor" });
+    if (!["doctor", "client", "vendor", "assistant"].includes(role)) {
+      return res.status(400).json({ message: "role must be doctor, client, vendor, or assistant" });
     }
     if (password.length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters" });
@@ -387,7 +387,7 @@ router.put("/me", protect, async (req, res) => {
 // write the same clinic-owner document via clinicId().
 
 // GET /api/auth/clinic-settings -> the clinic's operational settings.
-router.get("/clinic-settings", protect, requireStaff, async (req, res) => {
+router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req, res) => {
   try {
     const owner = await User.findById(clinicId(req.user))
       .select("clinicName availability slotDuration dayOverrides location")
@@ -407,7 +407,7 @@ router.get("/clinic-settings", protect, requireStaff, async (req, res) => {
 });
 
 // PUT /api/auth/clinic-settings -> update the clinic's operational settings.
-router.put("/clinic-settings", protect, requireStaff, async (req, res) => {
+router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req, res) => {
   try {
     const owner = await User.findById(clinicId(req.user));
     if (!owner) return res.status(404).json({ message: "Clinic not found" });

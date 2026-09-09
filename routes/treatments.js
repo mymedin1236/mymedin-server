@@ -2,11 +2,11 @@ import express from "express";
 import mongoose from "mongoose";
 import Treatment from "../models/Treatment.js";
 import User from "../models/User.js";
-import { protect, clinicId } from "../middleware/auth.js";
+import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
 
 const router = express.Router();
-router.use(protect);
+router.use(protect, resolveClinic);
 
 const isStaff = (user) => user.role === "doctor" || user.role === "assistant";
 

@@ -6,10 +6,10 @@ import Notification from "../models/Notification.js";
 import Review from "../models/Review.js";
 import { sendPush } from "../utils/push.js";
 import { notifyClinic } from "../utils/notify.js";
-import { protect, requireRole, clinicId } from "../middleware/auth.js";
+import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
 
 const router = express.Router();
-router.use(protect);
+router.use(protect, resolveClinic);
 
 // Create an in-app notification AND fire a background web push to the recipient
 const notify = async (user, type, title, body, data) => {

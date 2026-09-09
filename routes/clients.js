@@ -3,7 +3,7 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Association from "../models/Association.js";
 import { sendMail } from "../utils/mailer.js";
-import { protect, requireRole, clinicId } from "../middleware/auth.js";
+import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -14,7 +14,7 @@ const doctorNameFor = async (reqUser, doctorId) =>
     : reqUser.name) || reqUser.name;
 
 // All routes here require authenticated clinic staff (doctor or their assistant)
-router.use(protect, requireRole("doctor", "assistant"));
+router.use(protect, requireRole("doctor", "assistant"), resolveClinic);
 
 // GET /api/clients  -> list clients associated with THIS clinic
 router.get("/", async (req, res) => {

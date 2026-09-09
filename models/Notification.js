@@ -5,6 +5,11 @@ import mongoose from "mongoose";
 const notificationSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    // Which clinic this notification belongs to — set on clinic-fanout notifications
+    // (see notifyClinic() in utils/notify.js) so an assistant engaged with several
+    // doctors only sees the active clinic's notifications. Unset for notifications
+    // addressed to a non-staff user (e.g. a patient), who only has one identity.
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     type: { type: String, required: true }, // association_request | association_approved | association_rejected | association_ended
     title: { type: String, required: true },
     body: { type: String },

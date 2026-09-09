@@ -16,7 +16,7 @@ export async function notifyClinic(doctorId, { type, title, body, url, email }) 
   }
 
   for (const uid of recipients) {
-    Notification.create({ user: uid, type, title, body, data: { url } }).catch((e) =>
+    Notification.create({ user: uid, doctor: doctorId, type, title, body, data: { url } }).catch((e) =>
       console.error("[notifyClinic] notif:", e?.message)
     );
     sendPush(uid, { title, body, url });

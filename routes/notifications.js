@@ -2,11 +2,27 @@ import express from "express";
 import Notification from "../models/Notification.js";
 import Appointment from "../models/Appointment.js";
 import Association from "../models/Association.js";
-import { protect, clinicId } from "../middleware/auth.js";
+import { protect, resolveClinicSoft, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 
 const router = express.Router();
-router.use(protect);
+// Soft resolution: the feed must stay reachable even before an assistant has an
+// active clinic selected (e.g. to see the notification inviting them to one).
+router.use(protect, resolveClinicSoft);
+
+// An assistant only sees notifications for their currently active clinic — every
+// Notification row fanned out via notifyClinic() carries the doctor id it was
+// sent for (see utils/notify.js). Rows with no doctor at all (engagement
+// invites/accepts — personal to the assistant, not per-clinic) always show, so
+// they're never hidden by a clinic filter or a not-yet-selected active clinic.
+// Not applicable to a doctor themselves (their own notifications are inherently
+// single-clinic).
+const clinicFilter = (req) => {
+  if (req.user.role !== "assistant") return {};
+  return req.user.doctor
+    ? { $or: [{ doctor: req.user.doctor }, { doctor: { $exists: false } }] }
+    : { doctor: { $exists: false } };
+};
 
 const fmtWhen = (d) =>
   new Date(d).toLocaleString("en-GB", {
@@ -28,10 +44,11 @@ router.get("/", async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const isStaff = req.user.role === "doctor" || req.user.role === "assistant";
+    const filter = { user: req.user._id, ...clinicFilter(req) };
     const [items, unreadCount, total, associationRequests, appointmentRequests] = await Promise.all([
-      Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(limit),
-      Notification.countDocuments({ user: req.user._id, read: false }),
-      Notification.countDocuments({ user: req.user._id }),
+      Notification.find(filter).sort({ createdAt: -1 }).limit(limit),
+      Notification.countDocuments({ ...filter, read: false }),
+      Notification.countDocuments(filter),
       isStaff ? Association.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
       isStaff ? Appointment.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
     ]);
@@ -44,14 +61,14 @@ router.get("/", async (req, res) => {
 
 // POST /api/notifications/read-all -> mark all as read
 router.post("/read-all", async (req, res) => {
-  await Notification.updateMany({ user: req.user._id, read: false }, { read: true });
+  await Notification.updateMany({ ...clinicFilter(req), user: req.user._id, read: false }, { read: true });
   res.json({ message: "ok" });
 });
 
 // POST /api/notifications/:id/read -> mark one as read
 router.post("/:id/read", async (req, res) => {
   await Notification.findOneAndUpdate(
-    { _id: req.params.id, user: req.user._id },
+    { _id: req.params.id, user: req.user._id, ...clinicFilter(req) },
     { read: true }
   );
   res.json({ message: "ok" });
@@ -60,15 +77,15 @@ router.post("/:id/read", async (req, res) => {
 // POST /api/notifications/:id/unread -> mark one as unread
 router.post("/:id/unread", async (req, res) => {
   await Notification.findOneAndUpdate(
-    { _id: req.params.id, user: req.user._id },
+    { _id: req.params.id, user: req.user._id, ...clinicFilter(req) },
     { read: false }
   );
   res.json({ message: "ok" });
 });
 
-// DELETE /api/notifications -> clear all of the user's notifications
+// DELETE /api/notifications -> clear all of the user's notifications for their active clinic
 router.delete("/", async (req, res) => {
-  await Notification.deleteMany({ user: req.user._id });
+  await Notification.deleteMany({ user: req.user._id, ...clinicFilter(req) });
   res.json({ message: "cleared" });
 });
 
@@ -77,7 +94,7 @@ router.delete("/", async (req, res) => {
 // notifies the clinic (doctor + assistants). Idempotent.
 router.post("/:id/acknowledge", async (req, res) => {
   try {
-    const n = await Notification.findOne({ _id: req.params.id, user: req.user._id });
+    const n = await Notification.findOne({ _id: req.params.id, user: req.user._id, ...clinicFilter(req) });
     if (!n) return res.status(404).json({ message: "Notification not found" });
     if (!n.data?.canAcknowledge) {
       return res.status(400).json({ message: "This notification can't be acknowledged." });
@@ -111,7 +128,7 @@ router.post("/:id/acknowledge", async (req, res) => {
 
 // DELETE /api/notifications/:id -> dismiss one
 router.delete("/:id", async (req, res) => {
-  await Notification.findOneAndDelete({ _id: req.params.id, user: req.user._id });
+  await Notification.findOneAndDelete({ _id: req.params.id, user: req.user._id, ...clinicFilter(req) });
   res.json({ message: "deleted" });
 });
 
