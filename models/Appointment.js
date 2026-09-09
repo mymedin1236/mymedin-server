@@ -5,6 +5,15 @@ const appointmentSchema = new mongoose.Schema(
     doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     client: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     date: { type: Date, required: true },
+    // What kind of appointment this is, and how long it runs. `duration` is a
+    // SNAPSHOT taken when the appointment was booked, so re-timing a type later
+    // (or retiring it) never silently moves existing bookings' end times — the
+    // overlap checks keep using the length the patient actually booked.
+    // `typeName` is denormalised for the same reason: lists and notifications
+    // read it without a populate, and it survives the type being deleted.
+    appointmentType: { type: mongoose.Schema.Types.ObjectId, ref: "AppointmentType" },
+    typeName: { type: String, trim: true, default: "" },
+    duration: { type: Number, min: 5, max: 480 },
     reason: { type: String, trim: true, default: "" },
     status: {
       type: String,

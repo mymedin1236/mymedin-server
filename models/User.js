@@ -56,23 +56,31 @@ const userSchema = new mongoose.Schema(
       type: { type: String, enum: ["Point"], default: undefined },
       coordinates: { type: [Number], default: undefined },
     },
-    // Weekly availability, e.g. [{ day: "Monday", start: "09:00", end: "17:00" }]
+    // Weekly availability, e.g. [{ day: "Mon", start: "09:00", end: "17:00" }].
+    // A day may hold SEVERAL brackets, and each may name an appointment type —
+    // that's what lets one day run different kinds of appointment at different
+    // slot lengths (12:00-15:00 consultations, 18:00-21:00 transplants, ...).
+    // A bracket with no type uses the clinic's default `slotDuration`, which is
+    // how every clinic behaved before types existed.
     availability: [
       {
         _id: false,
         day: { type: String },
         start: { type: String },
         end: { type: String },
+        appointmentType: { type: mongoose.Schema.Types.ObjectId, ref: "AppointmentType" },
       },
     ],
-    // Length of a single appointment slot in minutes (doctor-configurable).
+    // Default slot length in minutes, used by any bracket that names no type.
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },
     // Per-date exceptions to the weekly availability, e.g. the doctor leaving
     // early on a specific day or taking the day off. When an entry matches the
     // booking date it overrides the normal weekly hours for that date only.
-    //   { date: "2026-08-02", closed: false, start: "09:00", end: "21:00" }
+    //   { date: "2026-08-02", blocks: [{ start: "09:00", end: "21:00" }] }
     //   { date: "2026-12-25", closed: true }  // day off
+    // Like weekly hours, an override may carry several typed brackets. `start`/
+    // `end` are the pre-types single-window shape, still read for old records.
     dayOverrides: [
       {
         _id: false,
@@ -80,6 +88,14 @@ const userSchema = new mongoose.Schema(
         closed: { type: Boolean, default: false },
         start: { type: String },
         end: { type: String },
+        blocks: [
+          {
+            _id: false,
+            start: { type: String },
+            end: { type: String },
+            appointmentType: { type: mongoose.Schema.Types.ObjectId, ref: "AppointmentType" },
+          },
+        ],
       },
     ],
     // Denormalized rating, recomputed from Reviews

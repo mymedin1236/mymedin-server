@@ -11,6 +11,7 @@ import clientsRoutes from "./routes/clients.js";
 import staffRoutes from "./routes/staff.js";
 import familyRoutes from "./routes/family.js";
 import appointmentsRoutes from "./routes/appointments.js";
+import appointmentTypesRoutes from "./routes/appointmentTypes.js";
 import treatmentsRoutes from "./routes/treatments.js";
 import doctorsRoutes from "./routes/doctors.js";
 import productsRoutes from "./routes/products.js";
@@ -31,6 +32,7 @@ import { startInvoiceJob } from "./jobs/invoices.js";
 import User from "./models/User.js";
 import Notification from "./models/Notification.js";
 import Appointment from "./models/Appointment.js";
+import AppointmentType from "./models/AppointmentType.js";
 
 const app = express();
 
@@ -123,6 +125,7 @@ app.use("/api/clients", clientsRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/family", familyRoutes);
 app.use("/api/appointments", appointmentsRoutes);
+app.use("/api/appointment-types", appointmentTypesRoutes);
 app.use("/api/treatments", treatmentsRoutes);
 app.use("/api/doctors", doctorsRoutes);
 app.use("/api/products", productsRoutes);
@@ -155,6 +158,10 @@ connectDB()
     User.syncIndexes().catch((e) => console.error("User.syncIndexes failed:", e.message));
     // Build the 15-day TTL index so old notifications auto-delete.
     Notification.syncIndexes().catch((e) => console.error("Notification.syncIndexes failed:", e.message));
+    // Build the per-clinic unique index on appointment type names.
+    AppointmentType.syncIndexes().catch((e) =>
+      console.error("AppointmentType.syncIndexes failed:", e.message)
+    );
     // Build the unique "one scheduled appointment per slot" index — makes
     // duplicate bookings impossible at the DB level. If it can't build because
     // pre-existing duplicate scheduled appointments are present, we log a clear
