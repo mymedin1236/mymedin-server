@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import AppointmentType from "../models/AppointmentType.js";
 import LoginEvent from "../models/LoginEvent.js";
 import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
@@ -389,9 +390,13 @@ router.put("/me", protect, async (req, res) => {
 // GET /api/auth/clinic-settings -> the clinic's operational settings.
 router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req, res) => {
   try {
-    const owner = await User.findById(clinicId(req.user))
-      .select("clinicName availability slotDuration dayOverrides location")
-      .lean();
+    const doctorId = clinicId(req.user);
+    const [owner, appointmentTypes] = await Promise.all([
+      User.findById(doctorId)
+        .select("clinicName availability slotDuration dayOverrides location")
+        .lean(),
+      AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
+    ]);
     if (!owner) return res.status(404).json({ message: "Clinic not found" });
     res.json({
       clinicName: owner.clinicName || "",
@@ -399,6 +404,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       slotDuration: owner.slotDuration || 15,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
+      appointmentTypes,
     });
   } catch (err) {
     console.error(err);
@@ -413,13 +419,27 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     if (!owner) return res.status(404).json({ message: "Clinic not found" });
     const b = req.body;
 
+    // Appointment types this clinic actually owns — a bracket may only point at
+    // one of these, so a crafted request can't attach another clinic's type
+    // (and with it another clinic's slot length) to these hours.
+    const ownTypeIds = new Set(
+      (await AppointmentType.find({ doctor: owner._id }).select("_id").lean()).map((t) => String(t._id))
+    );
+    const validType = (id) => (id && ownTypeIds.has(String(id)) ? id : undefined);
+
     if (Array.isArray(b.availability)) {
-      // Keep only well-formed { day, start, end } blocks. A day may repeat (a
-      // morning + an evening session), so we don't collapse by day here.
+      // Keep only well-formed { day, start, end } brackets. A day may repeat (a
+      // morning + an evening session, or a consultation bracket followed by a
+      // surgery bracket), so we don't collapse by day here.
       const hhmm = /^\d{2}:\d{2}$/;
       owner.availability = b.availability
         .filter((a) => a && a.day && hhmm.test(a.start || "") && hhmm.test(a.end || "") && a.start < a.end)
-        .map((a) => ({ day: a.day, start: a.start, end: a.end }));
+        .map((a) => ({
+          day: a.day,
+          start: a.start,
+          end: a.end,
+          appointmentType: validType(a.appointmentType),
+        }));
     }
     if (b.slotDuration != null && b.slotDuration !== "") {
       const d = Number(b.slotDuration);
@@ -429,14 +449,24 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       // Keep only well-formed, current-or-future entries so the list can't grow
       // unbounded with stale past exceptions.
       const todayStr = new Date().toISOString().slice(0, 10);
+      const hhmmOv = /^\d{2}:\d{2}$/;
       owner.dayOverrides = b.dayOverrides
         .filter((o) => o && /^\d{4}-\d{2}-\d{2}$/.test(o.date) && o.date >= todayStr)
-        .map((o) => ({
-          date: o.date,
-          closed: !!o.closed,
-          start: o.closed ? undefined : o.start || undefined,
-          end: o.closed ? undefined : o.end || undefined,
-        }));
+        .map((o) => {
+          if (o.closed) return { date: o.date, closed: true, blocks: [] };
+          // Prefer the typed `blocks` array; accept the legacy single window so
+          // an older client (or an override saved before types) still saves.
+          const raw = Array.isArray(o.blocks) && o.blocks.length ? o.blocks : [o];
+          const blocks = raw
+            .filter((x) => x && hhmmOv.test(x.start || "") && hhmmOv.test(x.end || "") && x.start < x.end)
+            .map((x) => ({
+              start: x.start,
+              end: x.end,
+              appointmentType: validType(x.appointmentType),
+            }));
+          return { date: o.date, closed: false, blocks };
+        })
+        .filter((o) => o.closed || o.blocks.length);
     }
     if (
       b.latitude != null &&
@@ -451,12 +481,16 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     }
 
     await owner.save();
+    const appointmentTypes = await AppointmentType.find({ doctor: owner._id })
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
     res.json({
       clinicName: owner.clinicName || "",
       availability: owner.availability || [],
       slotDuration: owner.slotDuration || 15,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
+      appointmentTypes,
     });
   } catch (err) {
     console.error(err);

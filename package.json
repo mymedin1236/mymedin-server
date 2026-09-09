@@ -10,7 +10,9 @@
     "seed": "node seed/seedProducts.js",
     "seed:admin": "node scripts/seedAdmin.js",
     "dedupe:appointments": "node scripts/dedupeScheduled.js",
-    "migrate:doctor": "node scripts/migrateDentistToDoctor.js"
+    "migrate:doctor": "node scripts/migrateDentistToDoctor.js",
+    "migrate:appointment-types": "node scripts/backfillAppointmentTypes.js",
+    "test:slots": "node utils/slots.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

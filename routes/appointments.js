@@ -1,8 +1,10 @@
 import express from "express";
 import mongoose from "mongoose";
 import Appointment from "../models/Appointment.js";
+import AppointmentType from "../models/AppointmentType.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
+import { slotsForDay, findSlotAt, DEFAULT_SLOT_MINUTES } from "../utils/slots.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
@@ -36,22 +38,59 @@ const doctorNameFor = async (user) => {
   return user.name;
 };
 
-// True if a scheduled or pending appointment already occupies this exact slot.
+// Statuses that actually hold a slot.
 const ACTIVE = ["scheduled", "pending"];
-// A slot is taken if another active appointment for this doctor OVERLAPS it —
-// i.e. starts within one slot-length of the requested time — not only if it's the
-// exact same instant. This stops two appointments a few minutes apart on the same
-// chair (e.g. an 8:45 booking made under a 15-min grid vs an 8:40 booking under a
-// 20-min grid). Appointments exactly one slot-length apart (adjacent slots) are
-// still allowed. The exact-time unique index remains as the race-proof backstop.
-const slotConflict = async (doctorId, date, exceptId) => {
+
+// The longest an appointment can be (matches the AppointmentType `duration`
+// cap), used to bound the overlap scan below.
+const MAX_APPOINTMENT_MINUTES = 480;
+
+// Everything the slot engine needs for one clinic, in a single round trip.
+const clinicSchedule = async (doctorId) => {
+  const [owner, types] = await Promise.all([
+    User.findById(doctorId).select("availability slotDuration dayOverrides").lean(),
+    AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
+  ]);
+  return {
+    availability: owner?.availability || [],
+    dayOverrides: owner?.dayOverrides || [],
+    defaultDuration: owner?.slotDuration || DEFAULT_SLOT_MINUTES,
+    types: types || [],
+    exists: !!owner,
+  };
+};
+
+// A slot is taken when another active appointment for this doctor OVERLAPS the
+// requested interval [date, date + duration). Since appointment types have
+// different lengths, "overlap" is real interval arithmetic, not a fixed gap: a
+// 90-minute transplant at 18:00 blocks 18:00-19:30 outright, while two adjacent
+// 20-minute consultations at 12:00 and 12:20 sit happily side by side.
+//
+// The stored `duration` is the one snapshotted at booking time; appointments
+// created before types existed have none, so they fall back to the clinic's
+// default slot length. The exact-time unique index stays as the race-proof
+// backstop underneath this check.
+const slotConflict = async (doctorId, date, duration, exceptId) => {
   const owner = await User.findById(doctorId).select("slotDuration").lean();
-  const gapMs = (owner?.slotDuration || 15) * 60000;
-  const t = new Date(date).getTime();
+  const fallback = owner?.slotDuration || DEFAULT_SLOT_MINUTES;
+  const startMs = new Date(date).getTime();
+  const endMs = startMs + (Number(duration) || fallback) * 60000;
+
   const query = {
     doctor: doctorId,
     status: { $in: ACTIVE },
-    date: { $gt: new Date(t - gapMs), $lt: new Date(t + gapMs) },
+    // Indexed pre-filter on the { doctor, date } index: an appointment can only
+    // overlap us if it starts before we end and no earlier than the longest
+    // possible appointment before we start. The $expr below then does the exact
+    // arithmetic on the few candidates this leaves.
+    date: { $gt: new Date(startMs - MAX_APPOINTMENT_MINUTES * 60000), $lt: new Date(endMs) },
+    // ...and it overlaps only if its own end runs past our start.
+    $expr: {
+      $gt: [
+        { $add: ["$date", { $multiply: [{ $ifNull: ["$duration", fallback] }, 60000] }] },
+        new Date(startMs),
+      ],
+    },
   };
   if (exceptId) query._id = { $ne: exceptId };
   return Appointment.findOne(query);
@@ -62,12 +101,7 @@ const slotConflict = async (doctorId, date, exceptId) => {
 // IN THAT TIMEZONE so a crafted request can't book outside the clinic's opening
 // hours or off the slot grid, no matter what the client sends.
 const CLINIC_OFFSET_MIN = 5 * 60;
-const DOW_LABEL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const pad2 = (n) => String(n).padStart(2, "0");
-const hhmmToMin = (s) => {
-  const [h, m] = String(s).split(":").map(Number);
-  return h * 60 + (m || 0);
-};
 const clinicPartsOf = (date) => {
   const s = new Date(new Date(date).getTime() + CLINIC_OFFSET_MIN * 60000);
   return {
@@ -76,43 +110,66 @@ const clinicPartsOf = (date) => {
     minutes: s.getUTCHours() * 60 + s.getUTCMinutes(),
   };
 };
-// Returns an error message if `date` is not a bookable slot for this doctor
-// (clinic closed that day, outside opening hours, or off the slot grid); else null.
-const invalidSlotReason = async (doctorId, date) => {
-  const owner = await User.findById(doctorId)
-    .select("availability slotDuration dayOverrides")
-    .lean();
-  if (!owner) return null; // nothing to validate against
+// Resolve a requested instant against the clinic's real slot grid.
+//
+// Returns { slot } when the time is a genuine slot start — the slot carries the
+// appointment type and its duration, which the caller snapshots onto the
+// booking. Returns { error } when the clinic is closed, the time falls outside
+// the operational-hours brackets, or it doesn't line up with any slot in the
+// bracket it lands in (e.g. 18:45 inside an 18:00-21:00 / 90-minute transplant
+// bracket, where only 18:00 and 19:30 are real starts).
+//
+// `wantedTypeId` disambiguates when two brackets of different types start at the
+// same minute; without it the earliest-listed type wins.
+const resolveSlot = async (doctorId, date, wantedTypeId) => {
+  const schedule = await clinicSchedule(doctorId);
+  if (!schedule.exists) return { slot: null }; // nothing to validate against
+
   const { dayStr, dow, minutes } = clinicPartsOf(date);
-  const step = owner.slotDuration || 15;
-  const availability = owner.availability || [];
-  const overrides = owner.dayOverrides || [];
+  const slots = slotsForDay({
+    availability: schedule.availability,
+    dayOverrides: schedule.dayOverrides,
+    dayStr,
+    dow,
+    types: schedule.types,
+    defaultDuration: schedule.defaultDuration,
+  });
 
-  // Effective hours for this clinic day — a per-date override wins over the
-  // weekly hours (same precedence the client uses).
-  let hours = null;
-  const ov = overrides.find((o) => o.date === dayStr);
-  if (ov && ov.closed) return "The clinic is closed on this day.";
-  if (ov && ov.start && ov.end) {
-    hours = { start: hhmmToMin(ov.start), end: hhmmToMin(ov.end) };
-  } else {
-    const entry = availability.find((a) => a.day === DOW_LABEL[dow]);
-    if (entry && entry.start && entry.end) {
-      hours = { start: hhmmToMin(entry.start), end: hhmmToMin(entry.end) };
-    } else if (availability.length === 0) {
-      hours = { start: 9 * 60, end: 18 * 60 }; // no hours set -> sensible default
-    } else {
-      return "The clinic is closed on this day.";
-    }
-  }
+  if (!slots || slots.length === 0) return { error: "The clinic is closed on this day." };
 
-  if (minutes < hours.start || minutes >= hours.end) {
-    return "That time is outside the clinic's opening hours.";
+  const slot = findSlotAt(slots, minutes, wantedTypeId);
+  if (!slot) {
+    const inHours = slots.some((sl) => minutes >= sl.start && minutes < sl.end);
+    return {
+      error: inHours
+        ? "That time isn't the start of an appointment slot. Please pick one of the times shown."
+        : "That time is outside the clinic's opening hours.",
+    };
   }
-  if ((minutes - hours.start) % step !== 0) {
-    return "That time is not a valid appointment slot.";
+  return { slot };
+};
+
+// The type + duration to stamp on a booking clinic STAFF are creating.
+//
+// Staff are deliberately not held to the patient-facing grid — they routinely
+// squeeze someone in off-grid or after hours. So we take the slot's type when
+// the time happens to land on one, honour an explicitly chosen type otherwise,
+// and fall back to the clinic default. Only patients get a hard rejection.
+const staffSlotFor = async (doctorId, date, wantedTypeId) => {
+  const schedule = await clinicSchedule(doctorId);
+  if (wantedTypeId) {
+    const t = schedule.types.find((x) => String(x._id) === String(wantedTypeId));
+    if (t) return { appointmentType: t._id, typeName: t.name, duration: t.duration };
   }
-  return null;
+  const { slot } = await resolveSlot(doctorId, date, wantedTypeId);
+  if (slot) {
+    return {
+      appointmentType: slot.typeId || undefined,
+      typeName: slot.typeName || "",
+      duration: slot.duration,
+    };
+  }
+  return { appointmentType: undefined, typeName: "", duration: schedule.defaultDuration };
 };
 
 // Calendar-day window [start, end) for the given instant.
@@ -213,15 +270,25 @@ router.get("/booked", async (req, res) => {
     }
     if (exclude && mongoose.isValidObjectId(exclude)) q._id = { $ne: exclude };
 
-    const [appts, doctor] = await Promise.all([
-      Appointment.find(q).select("date").lean(),
-      User.findById(doctorId).select("availability slotDuration dayOverrides").lean(),
+    const [appts, schedule] = await Promise.all([
+      Appointment.find(q).select("date duration appointmentType typeName").lean(),
+      clinicSchedule(doctorId),
     ]);
     res.json({
+      // `slots` (start times only) is kept for older clients; `booked` carries
+      // each booking's length so the picker can grey out every slot an existing
+      // appointment runs through, not just the one it starts on.
       slots: appts.map((a) => a.date),
-      availability: doctor?.availability || [],
-      slotDuration: doctor?.slotDuration || 15,
-      dayOverrides: doctor?.dayOverrides || [],
+      booked: appts.map((a) => ({
+        date: a.date,
+        duration: a.duration || schedule.defaultDuration,
+        appointmentType: a.appointmentType || null,
+        typeName: a.typeName || "",
+      })),
+      availability: schedule.availability,
+      slotDuration: schedule.defaultDuration,
+      dayOverrides: schedule.dayOverrides,
+      appointmentTypes: schedule.types,
     });
   } catch (err) {
     console.error(err);
@@ -236,14 +303,17 @@ router.post("/", async (req, res) => {
       return res.status(403).json({ message: "Only clinic staff can create appointments" });
     }
     const doctorId = clinicId(req.user);
-    const { client, date, reason, notes } = req.body;
+    const { client, date, reason, notes, appointmentType } = req.body;
     if (!client || !date) {
       return res.status(400).json({ message: "client and date are required" });
     }
     if (new Date(date).getTime() < Date.now()) {
       return res.status(400).json({ message: "Appointment cannot be in the past" });
     }
-    if (await slotConflict(doctorId, date)) {
+    // Type + length for this booking, so the overlap check below reserves the
+    // right amount of the doctor's day (20 minutes vs 90).
+    const typing = await staffSlotFor(doctorId, date, appointmentType);
+    if (await slotConflict(doctorId, date, typing.duration)) {
       return res.status(409).json({
         message: "Another appointment is already scheduled at this date and time.",
         code: "SLOT_TAKEN",
@@ -261,6 +331,7 @@ router.post("/", async (req, res) => {
       date,
       reason,
       notes,
+      ...typing,
     });
     const populated = await appt.populate([
       { path: "client", select: "name email phone managed guardian guardianName guardianEmail guardianPhone" },
@@ -332,10 +403,10 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ message: "You are not associated with a doctor yet." });
     }
 
-    const badSlot = await invalidSlotReason(doctorId, date);
+    const { slot, error: badSlot } = await resolveSlot(doctorId, date, req.body.appointmentType);
     if (badSlot) return res.status(400).json({ message: badSlot, code: "INVALID_SLOT" });
 
-    if (await slotConflict(doctorId, date)) {
+    if (await slotConflict(doctorId, date, slot?.duration)) {
       return res.status(409).json({
         message: "That slot was just taken. Please pick another time.",
         code: "SLOT_TAKEN",
@@ -354,6 +425,9 @@ router.post("/request", async (req, res) => {
       date,
       reason,
       status: "pending",
+      appointmentType: slot?.typeId || undefined,
+      typeName: slot?.typeName || "",
+      duration: slot?.duration,
     });
 
     const when = fmtWhen(date);
@@ -393,7 +467,7 @@ router.patch("/:id/confirm", async (req, res) => {
     if (!appt) return res.status(404).json({ message: "Request not found" });
 
     // Make sure the slot wasn't taken by someone else since the request came in.
-    if (await slotConflict(doctorId, appt.date, appt._id)) {
+    if (await slotConflict(doctorId, appt.date, appt.duration, appt._id)) {
       return res.status(409).json({
         message: "That slot is already taken — decline this request or reschedule.",
         code: "SLOT_TAKEN",
@@ -487,7 +561,7 @@ router.put("/:id", async (req, res) => {
       return res.status(403).json({ message: "Only clinic staff can update appointments" });
     }
     const doctorId = clinicId(req.user);
-    const { date, reason, notes, status, version } = req.body;
+    const { date, reason, notes, status, version, appointmentType } = req.body;
 
     const current = await Appointment.findOne({ _id: req.params.id, doctor: doctorId });
     if (!current) return res.status(404).json({ message: "Appointment not found" });
@@ -501,7 +575,27 @@ router.put("/:id", async (req, res) => {
     }
 
     const nextStatus = status ?? current.status;
-    if (date && nextStatus === "scheduled" && (await slotConflict(doctorId, date, current._id))) {
+    // Re-type the booking when staff MOVE it, or pick a different type for it —
+    // sliding a booking from the consultation bracket into the transplant
+    // bracket must also change how much of the day it reserves. An edit that
+    // touches neither (renaming the reason, adding a note) leaves the type and
+    // the duration snapshot exactly as booked.
+    const movingDate =
+      date !== undefined && new Date(date).getTime() !== new Date(current.date).getTime();
+    const retypingType =
+      appointmentType !== undefined &&
+      String(appointmentType || "") !== String(current.appointmentType || "");
+    const retype =
+      movingDate || retypingType
+        ? await staffSlotFor(
+            doctorId,
+            date ?? current.date,
+            retypingType ? appointmentType : current.appointmentType
+          )
+        : null;
+    const nextDuration = retype ? retype.duration : current.duration;
+
+    if (date && nextStatus === "scheduled" && (await slotConflict(doctorId, date, nextDuration, current._id))) {
       return res.status(409).json({
         message: "Another appointment is already scheduled at this date and time.",
         code: "SLOT_TAKEN",
@@ -514,11 +608,15 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const dateChanged =
-      date !== undefined && new Date(date).getTime() !== new Date(current.date).getTime();
+    const dateChanged = movingDate;
 
     const set = {};
     if (date !== undefined) set.date = date;
+    if (retype) {
+      set.appointmentType = retype.appointmentType || null;
+      set.typeName = retype.typeName;
+      set.duration = retype.duration;
+    }
     if (reason !== undefined) set.reason = reason;
     if (notes !== undefined) set.notes = notes;
     if (status !== undefined) set.status = status;
@@ -595,10 +693,17 @@ router.patch("/:id/reschedule", async (req, res) => {
       return res.status(400).json({ message: "Only active appointments can be rescheduled." });
     }
 
-    const badSlot = await invalidSlotReason(appt.doctor, date);
+    // A patient rescheduling stays within the grid, and lands on whatever type
+    // the new bracket runs — moving from a consultation slot to a PRP slot
+    // re-types the appointment (and its length) to match.
+    const { slot, error: badSlot } = await resolveSlot(
+      appt.doctor,
+      date,
+      req.body.appointmentType ?? appt.appointmentType
+    );
     if (badSlot) return res.status(400).json({ message: badSlot, code: "INVALID_SLOT" });
 
-    if (await slotConflict(appt.doctor, date, appt._id)) {
+    if (await slotConflict(appt.doctor, date, slot?.duration ?? appt.duration, appt._id)) {
       return res.status(409).json({
         message: "That slot is already taken. Please pick a different time.",
         code: "SLOT_TAKEN",
@@ -614,6 +719,11 @@ router.patch("/:id/reschedule", async (req, res) => {
     // Keep the current status — a pending request stays pending (awaiting
     // confirmation) at the new time; a scheduled one stays scheduled.
     appt.date = date;
+    if (slot) {
+      appt.appointmentType = slot.typeId || undefined;
+      appt.typeName = slot.typeName || "";
+      appt.duration = slot.duration;
+    }
     appt.arrivalStatus = "none"; // moved time → clear travel status
     appt.remind24hSent = false; // re-arm reminders for the new time
     appt.remind12hSent = false;

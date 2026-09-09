@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import User from "../models/User.js";
 import Review from "../models/Review.js";
 import Appointment from "../models/Appointment.js";
+import AppointmentType from "../models/AppointmentType.js";
 import { protect, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -74,6 +75,12 @@ router.get("/:id", async (req, res) => {
     const bookedCount = await Appointment.countDocuments({ doctor: doctor._id });
     const doctorObj = doctor.toJSON();
     doctorObj.bookedCount = bookedCount;
+    // The kinds of appointment this clinic offers, so the public hours can say
+    // what each block of the day is actually for.
+    doctorObj.appointmentTypes = await AppointmentType.find({ doctor: doctor._id })
+      .sort({ order: 1, createdAt: 1 })
+      .select("name duration color description order active")
+      .lean();
 
     const reviews = await Review.find({ doctor: doctor._id })
       .populate("client", "name")
@@ -99,14 +106,27 @@ router.get("/:id/booked", async (req, res) => {
       if (from) q.date.$gte = new Date(from);
       if (to) q.date.$lt = new Date(to);
     }
-    const [appts, doctor] = await Promise.all([
-      Appointment.find(q).select("date").lean(),
+    const [appts, doctor, types] = await Promise.all([
+      Appointment.find(q).select("date duration").lean(),
       User.findById(req.params.id).select("slotDuration dayOverrides").lean(),
+      // Retired types are included deliberately: an hours bracket may still
+      // point at one, and the server validates bookings against every type. If
+      // the picker didn't know about them it would draw that bracket at the
+      // wrong slot length and every booking in it would be rejected.
+      AppointmentType.find({ doctor: req.params.id })
+        .sort({ order: 1, createdAt: 1 })
+        .select("name duration color description order active")
+        .lean(),
     ]);
+    const defaultDuration = doctor?.slotDuration || 15;
     res.json({
       slots: appts.map((a) => a.date),
-      slotDuration: doctor?.slotDuration || 15,
+      // Booked intervals (start + length) — a 90-minute session has to block the
+      // whole 90 minutes on the public grid, not just its starting slot.
+      booked: appts.map((a) => ({ date: a.date, duration: a.duration || defaultDuration })),
+      slotDuration: defaultDuration,
       dayOverrides: doctor?.dayOverrides || [],
+      appointmentTypes: types || [],
     });
   } catch (err) {
     console.error(err);
