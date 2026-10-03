@@ -6,6 +6,9 @@ import helmet from "helmet";
 import mongoSanitize from "express-mongo-sanitize";
 import { apiLimiter, loginLimiter, forgotLimiter, uploadLimiter } from "./middleware/rateLimit.js";
 import { connectDB } from "./config/db.js";
+import { whatsappConfigured } from "./utils/whatsapp.js";
+import { mailerConfigured } from "./utils/mailer.js";
+import { pushConfigured } from "./utils/push.js";
 import authRoutes from "./routes/auth.js";
 import clientsRoutes from "./routes/clients.js";
 import staffRoutes from "./routes/staff.js";
@@ -88,8 +91,16 @@ app.use(express.json({ limit: "8mb" }));
 // Strip MongoDB operators ($, .) from inputs to block NoSQL-injection.
 app.use(mongoSanitize());
 
-// Health check stays unthrottled (Render pings it).
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+// Health check stays unthrottled (Render pings it). It also reports which
+// outbound channels the deployed environment actually has configured, so a
+// missing production env var is visible without shell access to the host.
+// Booleans only — never the keys, session id or sender identity.
+app.get("/api/health", (req, res) =>
+  res.json({
+    ok: true,
+    channels: { whatsapp: whatsappConfigured, email: mailerConfigured, push: pushConfigured },
+  })
+);
 
 // Generous catch-all limiter, then tighter limits on sensitive endpoints.
 app.use("/api", apiLimiter);

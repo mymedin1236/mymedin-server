@@ -80,8 +80,10 @@ export async function sendWhatsApp({ to, text }) {
   }
 }
 
-// Is the WhatsApp session actually authenticated and ready? Used by the admin
-// health check — "configured" only means the env vars are present.
+// Is the WhatsApp session actually authenticated and ready? This reaches out to
+// the gateway, so it is for the CLI check in scripts/sendTestWhatsApp.js rather
+// than the unthrottled /api/health, which only reports whether the env vars are
+// present ("configured") and never makes a network call.
 export async function whatsappStatus() {
   if (!whatsappConfigured) return { ok: false, status: "not_configured" };
   try {
