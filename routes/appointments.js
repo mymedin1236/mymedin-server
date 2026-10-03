@@ -428,31 +428,61 @@ router.post("/request", async (req, res) => {
       });
     }
 
+    // A clinic that trusts its published hours can skip the approval step and
+    // have the booking confirmed on the spot. The slot and same-day conflict
+    // checks above have already run, so this cannot double-book -- it only
+    // decides whether a human still has to press Confirm.
+    const doctor = await User.findById(doctorId).select("name email autoConfirmBookings");
+    const autoConfirm = !!doctor?.autoConfirmBookings;
+
     const appt = await Appointment.create({
       doctor: doctorId,
       client: patientId,
       date,
       reason,
-      status: "pending",
+      status: autoConfirm ? "scheduled" : "pending",
       appointmentType: slot?.typeId || undefined,
       typeName: slot?.typeName || "",
       duration: slot?.duration,
     });
 
     const when = fmtWhen(date);
-    const doctor = await User.findById(doctorId).select("name email");
-    const body = `${patientName} requested an appointment on ${when}${
-      reason ? ` for ${reason}` : ""
-    }.`;
+    const forReason = reason ? ` for ${reason}` : "";
+
+    // The clinic hears either way, but the message has to say whether anything
+    // is waiting on them -- "request" implies an action that no longer exists.
     await notifyClinic(doctorId, {
-      type: "appointment_requested",
-      title: "New appointment request",
-      body,
+      type: autoConfirm ? "appointment_scheduled" : "appointment_requested",
+      title: autoConfirm ? "New appointment booked" : "New appointment request",
+      body: autoConfirm
+        ? `${patientName} booked an appointment on ${when}${forReason}.`
+        : `${patientName} requested an appointment on ${when}${forReason}.`,
       url: "/appointments",
       email: doctor?.email ? { to: doctor.email, greeting: `Hi Dr. ${doctor.name},\n\n` } : null,
     });
 
-    res.status(201).json({ appointment: appt });
+    // On auto-confirm the patient is owed the same confirmation /confirm sends,
+    // since no one is going to press it for them.
+    if (autoConfirm) {
+      const c = await User.findById(patientId).select(
+        "name email phone managed guardian guardianName guardianEmail guardianPhone"
+      );
+      if (c) {
+        const whose = c.managed ? `${c.name}'s` : "Your";
+        const t = clientNotifyTarget(c);
+        await notifyUser(t.userId, {
+          type: "appointment_confirmed",
+          title: "Appointment confirmed",
+          body: `${whose} appointment with Dr. ${doctor.name} on ${when} is confirmed.`,
+          url: "/client",
+          email: t.email,
+          whatsapp: t.whatsapp,
+          data: { appointmentId: appt._id, canAcknowledge: true },
+        });
+      }
+    }
+
+    res.status(201).json({ appointment: appt, autoConfirmed: autoConfirm });
   } catch (err) {
     if (err?.code === 11000) {
       return res.status(409).json({

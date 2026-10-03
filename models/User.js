@@ -71,6 +71,12 @@ const userSchema = new mongoose.Schema(
         appointmentType: { type: mongoose.Schema.Types.ObjectId, ref: "AppointmentType" },
       },
     ],
+    // How a patient's booking is handled. false (the default) keeps the
+    // request-then-approve flow: the appointment lands as "pending" and a human
+    // confirms it. true means the clinic trusts its own published hours and the
+    // booking is confirmed on the spot. Either way the slot and same-day
+    // conflict checks run first, so auto-confirm cannot double-book.
+    autoConfirmBookings: { type: Boolean, default: false },
     // Default slot length in minutes, used by any bracket that names no type.
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },

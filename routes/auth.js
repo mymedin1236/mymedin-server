@@ -442,6 +442,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       clinicName: owner.clinicName || "",
       availability: owner.availability || [],
       slotDuration: owner.slotDuration || 15,
+      autoConfirmBookings: !!owner.autoConfirmBookings,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,
@@ -484,6 +485,16 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     if (b.slotDuration != null && b.slotDuration !== "") {
       const d = Number(b.slotDuration);
       if (Number.isFinite(d) && d >= 5 && d <= 120) owner.slotDuration = d;
+    }
+    // Whether patient bookings skip approval. Deliberately the DOCTOR's call,
+    // not an assistant's: it decides whether anyone vets the diary at all.
+    if (b.autoConfirmBookings !== undefined) {
+      if (req.user.role !== "doctor") {
+        return res.status(403).json({
+          message: "Only the doctor can change how bookings are approved.",
+        });
+      }
+      owner.autoConfirmBookings = !!b.autoConfirmBookings;
     }
     if (Array.isArray(b.dayOverrides)) {
       // Keep only well-formed, current-or-future entries so the list can't grow
@@ -528,6 +539,7 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       clinicName: owner.clinicName || "",
       availability: owner.availability || [],
       slotDuration: owner.slotDuration || 15,
+      autoConfirmBookings: !!owner.autoConfirmBookings,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,
