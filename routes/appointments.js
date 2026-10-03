@@ -4,14 +4,145 @@ import Appointment from "../models/Appointment.js";
 import AppointmentType from "../models/AppointmentType.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
+import Engagement from "../models/Engagement.js";
 import { slotsForDay, findSlotAt, DEFAULT_SLOT_MINUTES } from "../utils/slots.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
-import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
+import { protect, resolveClinic, resolveClinicSoft, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 import { sendWhatsApp } from "../utils/whatsapp.js";
 
 const router = express.Router();
+// GET /api/appointments/day-grid?date=YYYY-MM-DD&doctors=id1,id2
+//
+// One day's slot grid for SEVERAL doctors at once, so a practice manager working
+// across a multi-dentist clinic can see who is free side by side instead of
+// switching clinic to check each one.
+//
+// Read-only and deliberately additive: it changes nothing about how bookings are
+// written. Staff pick a free slot here and then book it through POST / exactly
+// as before, against that one doctor. Every other endpoint stays scoped to a
+// single clinic.
+//
+// It is registered ABOVE the router-level resolveClinic and uses the SOFT
+// variant on purpose: resolveClinic 400s an assistant who has not picked an
+// active clinic, which is precisely the person this endpoint exists for. It
+// never reads req.user.doctor, so it needs no active clinic at all.
+//
+// An assistant may only ask for doctors they hold an ACTIVE engagement with;
+// ids they don't are dropped rather than erroring, so a stale tab cannot leak
+// another clinic's diary. A doctor only ever sees themselves.
+router.get("/day-grid", protect, resolveClinicSoft, async (req, res) => {
+  try {
+    if (!isStaff(req.user)) {
+      return res.status(403).json({ message: "Only clinic staff can view the day grid" });
+    }
+
+    const dayStr = String(req.query.date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayStr)) {
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
+    }
+
+    // Which doctors this user is actually allowed to see.
+    let allowed;
+    if (req.user.role === "assistant") {
+      const active = await Engagement.find({ assistant: req.user._id, status: "active" })
+        .select("doctor")
+        .lean();
+      allowed = active.map((e) => String(e.doctor));
+    } else {
+      allowed = [String(req.user._id)];
+    }
+
+    const asked = String(req.query.doctors || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    // No explicit list means "everyone I work for".
+    const ids = (asked.length ? asked.filter((id) => allowed.includes(id)) : allowed).filter((id) =>
+      mongoose.isValidObjectId(id)
+    );
+    if (!ids.length) return res.json({ date: dayStr, doctors: [] });
+
+    // The clinic day as a real UTC window, so appointments are matched on the
+    // same timeline the slots are placed on.
+    const dayStart = clinicInstant(dayStr, 0);
+    const dayEnd = clinicInstant(dayStr, 24 * 60);
+    const dow = new Date(dayStart.getTime() + CLINIC_OFFSET_MIN * 60000).getUTCDay();
+
+    const [profiles, appts] = await Promise.all([
+      User.find({ _id: { $in: ids }, role: "doctor" }).select("name clinicName").lean(),
+      Appointment.find({
+        doctor: { $in: ids },
+        status: { $in: ACTIVE },
+        date: { $gte: dayStart, $lt: dayEnd },
+      })
+        .populate("client", "name")
+        .select("doctor client date duration status typeName appointmentType")
+        .lean(),
+    ]);
+    const profileById = new Map(profiles.map((d) => [String(d._id), d]));
+
+    const doctors = await Promise.all(
+      ids.map(async (id) => {
+        const profile = profileById.get(id);
+        if (!profile) return null; // not a doctor, or deleted since the engagement
+        const schedule = await clinicSchedule(id);
+        const slots =
+          slotsForDay({
+            availability: schedule.availability,
+            dayOverrides: schedule.dayOverrides,
+            dayStr,
+            dow,
+            types: schedule.types,
+            defaultDuration: schedule.defaultDuration,
+          }) || [];
+        const mine = appts.filter((a) => String(a.doctor) === id);
+
+        return {
+          doctor: { _id: id, name: profile.name, clinicName: profile.clinicName || "" },
+          closed: slots.length === 0,
+          slots: slots.map((sl) => {
+            const startMs = clinicInstant(dayStr, sl.start).getTime();
+            const endMs = clinicInstant(dayStr, sl.end).getTime();
+            // A slot is taken if ANY booking overlaps it, not merely one that
+            // starts on it -- a 90-minute appointment blocks every slot it runs
+            // through.
+            const hit = mine.find((a) => {
+              const aStart = new Date(a.date).getTime();
+              const aEnd = aStart + (a.duration || schedule.defaultDuration) * 60000;
+              return aStart < endMs && startMs < aEnd;
+            });
+            return {
+              time: sl.time,
+              start: new Date(startMs).toISOString(),
+              duration: sl.duration,
+              typeId: sl.typeId || null,
+              typeName: sl.typeName || "",
+              color: sl.color || "",
+              available: !hit,
+              appointment: hit
+                ? {
+                    _id: hit._id,
+                    status: hit.status,
+                    typeName: hit.typeName || "",
+                    duration: hit.duration || schedule.defaultDuration,
+                    client: hit.client ? { _id: hit.client._id, name: hit.client.name } : null,
+                  }
+                : null,
+            };
+          }),
+        };
+      })
+    );
+
+    res.json({ date: dayStr, doctors: doctors.filter(Boolean) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 router.use(protect, resolveClinic);
 
 const isStaff = (user) => user.role === "doctor" || user.role === "assistant";
@@ -111,6 +242,13 @@ const clinicPartsOf = (date) => {
     minutes: s.getUTCHours() * 60 + s.getUTCMinutes(),
   };
 };
+// Inverse of clinicPartsOf: the UTC instant at `minutes` past midnight on
+// `dayStr` IN CLINIC TIME. Used to place a slot on the real timeline.
+const clinicInstant = (dayStr, minutes) => {
+  const [y, m, d] = dayStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d, 0, minutes) - CLINIC_OFFSET_MIN * 60000);
+};
+
 // Resolve a requested instant against the clinic's real slot grid.
 //
 // Returns { slot } when the time is a genuine slot start — the slot carries the
