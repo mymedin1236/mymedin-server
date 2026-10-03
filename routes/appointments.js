@@ -9,6 +9,7 @@ import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
 
 const router = express.Router();
 router.use(protect, resolveClinic);
@@ -199,18 +200,20 @@ const clientOwnsAppt = async (userId, appt) => {
 // Notify a user in-app + push + (optionally) email.
 // Where a patient's notification should go. For a managed dependent, route to the
 // linked guardian's account (in-app + push) and the guardian's email.
-const clientNotifyTarget = (c) => ({
-  userId: c.managed ? c.guardian || null : c._id,
-  email: c.managed
-    ? c.guardianEmail
-      ? { to: c.guardianEmail, greeting: `Hi ${c.guardianName || "there"},\n\n` }
-      : null
-    : c.email
-    ? { to: c.email, greeting: `Hi ${c.name},\n\n` }
-    : null,
-});
+const clientNotifyTarget = (c) => {
+  // A managed dependent has no contact details of their own — everything goes
+  // to the guardian, for WhatsApp exactly as it already does for email.
+  const greeting = `Hi ${c.managed ? c.guardianName || "there" : c.name},\n\n`;
+  const email = c.managed ? c.guardianEmail : c.email;
+  const phone = c.managed ? c.guardianPhone : c.phone;
+  return {
+    userId: c.managed ? c.guardian || null : c._id,
+    email: email ? { to: email, greeting } : null,
+    whatsapp: phone ? { to: phone, greeting } : null,
+  };
+};
 
-const notifyUser = async (userId, { type, title, body, url, email, data }) => {
+const notifyUser = async (userId, { type, title, body, url, email, whatsapp, data }) => {
   if (userId) {
     let ack;
     try {
@@ -225,6 +228,11 @@ const notifyUser = async (userId, { type, title, body, url, email, data }) => {
     const text = `${email.greeting || ""}${body}`;
     sendMail({ to: email.to, subject: title, text, html: text.replace(/\n/g, "<br/>") }).catch(
       (e) => console.error("email failed:", e?.message)
+    );
+  }
+  if (whatsapp?.to) {
+    sendWhatsApp({ to: whatsapp.to, text: `${whatsapp.greeting || ""}${body}` }).catch((e) =>
+      console.error("whatsapp failed:", e?.message)
     );
   }
 };
@@ -353,6 +361,7 @@ router.post("/", async (req, res) => {
       body,
       url: "/client",
       email: t.email,
+      whatsapp: t.whatsapp,
       data: { appointmentId: populated._id, canAcknowledge: true },
     });
 
@@ -486,7 +495,7 @@ router.patch("/:id/confirm", async (req, res) => {
     appt.remind1hSent = false;
     await appt.save();
     const populated = await appt.populate([
-      { path: "client", select: "name email phone managed guardian guardianName guardianEmail" },
+      { path: "client", select: "name email phone managed guardian guardianName guardianEmail guardianPhone" },
       { path: "doctor", select: "name email" },
     ]);
 
@@ -501,6 +510,7 @@ router.patch("/:id/confirm", async (req, res) => {
       body: `Dr. ${dName} confirmed ${whose} appointment on ${when}.`,
       url: "/client",
       email: t.email,
+      whatsapp: t.whatsapp,
       data: { appointmentId: appt._id, canAcknowledge: true },
     });
 
@@ -530,7 +540,7 @@ router.patch("/:id/decline", async (req, res) => {
     appt.status = "cancelled";
     await appt.save();
     const populated = await appt.populate([
-      { path: "client", select: "name email phone managed guardian guardianName guardianEmail" },
+      { path: "client", select: "name email phone managed guardian guardianName guardianEmail guardianPhone" },
       { path: "doctor", select: "name email" },
     ]);
 
@@ -545,6 +555,7 @@ router.patch("/:id/decline", async (req, res) => {
       body: `Dr. ${dName} could not confirm ${whose} requested appointment on ${when}. Please pick another time.`,
       url: "/client",
       email: t.email,
+      whatsapp: t.whatsapp,
     });
 
     res.json(populated);
@@ -636,7 +647,7 @@ router.put("/:id", async (req, res) => {
       { $set: set, $inc: { __v: 1 } },
       { new: true }
     )
-      .populate("client", "name email phone managed guardian guardianName guardianEmail")
+      .populate("client", "name email phone managed guardian guardianName guardianEmail guardianPhone")
       .populate("doctor", "name email");
     if (!appt) {
       return res.status(409).json({
@@ -645,18 +656,24 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    // Tell the patient (or guardian, for a managed child) when staff move the time.
-    if (dateChanged && appt.status === "scheduled") {
+    // Tell the patient (or guardian, for a managed child) when staff move the
+    // time, and — equally — when staff call the appointment off. A cancellation
+    // the patient never hears about is a patient who turns up to a closed door.
+    const staffCancelled = current.status !== "cancelled" && appt.status === "cancelled";
+    if ((dateChanged && appt.status === "scheduled") || staffCancelled) {
       const c = appt.client;
       const dName = await doctorNameFor(req.user);
       const whose = c.managed ? `${c.name}'s` : "your";
       const t = clientNotifyTarget(c);
       await notifyUser(t.userId, {
-        type: "appointment_scheduled",
-        title: "Appointment rescheduled",
-        body: `Dr. ${dName} rescheduled ${whose} appointment to ${fmtWhen(appt.date)}.`,
+        type: staffCancelled ? "appointment_cancelled" : "appointment_scheduled",
+        title: staffCancelled ? "Appointment cancelled" : "Appointment rescheduled",
+        body: staffCancelled
+          ? `Dr. ${dName} cancelled ${whose} appointment on ${fmtWhen(appt.date)}. Please contact the clinic to rebook.`
+          : `Dr. ${dName} rescheduled ${whose} appointment to ${fmtWhen(appt.date)}.`,
         url: "/client",
         email: t.email,
+        whatsapp: t.whatsapp,
       });
     }
 
