@@ -6,8 +6,47 @@ import AppointmentType from "../models/AppointmentType.js";
 import LoginEvent from "../models/LoginEvent.js";
 import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
 
 const router = express.Router();
+
+// Welcome a newly self-registered user over email and WhatsApp. Self-signup
+// previously confirmed nothing at all — the account simply existed. Entirely
+// best-effort: both senders swallow their own errors, and this is never
+// awaited, so a dead mailer or gateway can't fail someone's registration.
+const sendWelcome = (user) => {
+  const loginUrl =
+    (process.env.CLIENT_ORIGIN || "http://localhost:5173")
+      .split(",")[0]
+      .trim()
+      .replace(/\/+$/, "") + "/login";
+  const isDoctor = user.role === "doctor";
+  const greeting = isDoctor ? `Dr. ${user.name}` : user.name;
+  const subject = isDoctor ? "Your MyMedin clinic account" : "Welcome to MyMedin";
+  // Patient copy would be wrong for a vendor or an assistant, who have neither
+  // appointments nor treatments — they get the plain version.
+  const body = {
+    doctor:
+      `Your clinic account is ready. Sign in at ${loginUrl} to set your clinic hours, ` +
+      `add patients and start recording treatments.`,
+    client:
+      `Your account is ready. Sign in at ${loginUrl} to see your appointments. ` +
+      `We'll send reminders and treatment updates here.`,
+  }[user.role] || `Your account is ready. Sign in at ${loginUrl} to get started.`;
+  // No "reply to this message" — nothing reads inbound WhatsApp on the gateway.
+  const text = `Hi ${greeting}, welcome to MyMedin.\n\n${body}`;
+
+  if (user.email) {
+    sendMail({ to: user.email, subject, text, html: text.replace(/\n/g, "<br/>") }).catch((e) =>
+      console.error("[welcome] email:", e?.message)
+    );
+  }
+  if (user.phone) {
+    sendWhatsApp({ to: user.phone, text }).catch((e) =>
+      console.error("[welcome] whatsapp:", e?.message)
+    );
+  }
+};
 
 // Whether the request came from the installed PWA (standalone) vs a browser.
 const isPwa = (req) => req.headers["x-display-mode"] === "standalone";
@@ -105,6 +144,7 @@ router.post("/register", async (req, res) => {
       address,
       ...doctorFields,
     });
+    sendWelcome(user); // fire-and-forget; never blocks or fails the signup
     const token = signToken(user);
     res.status(201).json({ token, user });
   } catch (err) {
