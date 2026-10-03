@@ -6,7 +6,7 @@ import AppointmentType from "../models/AppointmentType.js";
 import LoginEvent from "../models/LoginEvent.js";
 import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp } from "../utils/whatsapp.js";
+import { sendWhatsApp, whatsappConfigured } from "../utils/whatsapp.js";
 
 const router = express.Router();
 
@@ -194,9 +194,10 @@ router.post("/login", async (req, res) => {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// POST /api/auth/forgot-password  -> email a time-limited reset link.
-// Accepts `identifier` (email OR phone). If the matched account has no email on
-// file (e.g. a phone-only patient), the client is asked to supply one via
+// POST /api/auth/forgot-password  -> send a time-limited reset link.
+// Accepts `identifier` (email OR phone), and delivers on every channel the
+// account has: email, WhatsApp, or both. Only when there is NEITHER an email on
+// file NOR a reachable phone is the client asked to supply an email via
 // `newEmail`, which we save to the account and use to send the link.
 router.post("/forgot-password", async (req, res) => {
   try {
@@ -214,9 +215,12 @@ router.post("/forgot-password", async (req, res) => {
 
     if (user) {
       let to = user.email;
+      // A phone-only patient can now be reached directly, so we no longer have
+      // to demand an email address off them just to deliver a link.
+      const canWhatsApp = whatsappConfigured && !!user.phone;
 
-      // Phone-only account with no email: collect one, save it, send there.
-      if (!to) {
+      // No email AND no way to WhatsApp them: collect an email, save it, send there.
+      if (!to && !canWhatsApp) {
         const provided = (newEmail || "").toString().trim().toLowerCase();
         if (!provided) {
           // Signal the client to ask for an email for this account.
@@ -246,31 +250,56 @@ router.post("/forgot-password", async (req, res) => {
         .trim()
         .replace(/\/+$/, "");
       const link = `${base}/reset-password?token=${token}`;
-      const result = await sendMail({
-        to,
-        subject: "Reset your MyMedin password",
-        text: `We received a request to reset your password.\n\nUse this link within 1 hour:\n${link}\n\nIf you didn't request this, you can ignore this email.`,
-        html: `<p>We received a request to reset your password.</p>
+
+      // Send on every channel we have for them. Either arriving is enough, so
+      // the link is not lost to a dead mailer or a sleeping gateway.
+      const emailResult = to
+        ? await sendMail({
+            to,
+            subject: "Reset your MyMedin password",
+            text: `We received a request to reset your password.\n\nUse this link within 1 hour:\n${link}\n\nIf you didn't request this, you can ignore this email.`,
+            html: `<p>We received a request to reset your password.</p>
                <p>Use this link within 1 hour:</p>
                <p><a href="${link}">${link}</a></p>
                <p>If you didn't request this, you can ignore this email.</p>`,
-      });
+          })
+        : null;
+      const waResult = canWhatsApp
+        ? await sendWhatsApp({
+            to: user.phone,
+            text:
+              `We received a request to reset your MyMedin password.\n\n` +
+              `Use this link within 1 hour:\n${link}\n\n` +
+              `If you didn't request this, you can ignore this message.`,
+          })
+        : null;
+
+      const result = {
+        delivered: !!(emailResult?.delivered || waResult?.delivered),
+        reason: [emailResult?.reason, waResult?.reason].filter(Boolean).join("; ") || null,
+      };
       if (!result.delivered) {
-        console.error(`[forgot-password] reset email to ${to} was NOT delivered: ${result.reason}`);
+        console.error(`[forgot-password] reset link for ${user._id} was NOT delivered: ${result.reason}`);
       }
-      // Opt-in diagnostics: set MAIL_DEBUG=true to learn whether the email
-      // actually went out (and why not).
+      // Opt-in diagnostics: set MAIL_DEBUG=true to learn whether the link
+      // actually went out on either channel (and why not).
       if (process.env.MAIL_DEBUG === "true") {
         return res.json({
           message: generic,
-          debug: { found: true, delivered: result.delivered, reason: result.reason || null },
+          debug: {
+            found: true,
+            delivered: result.delivered,
+            email: emailResult ? emailResult.delivered : "not attempted",
+            whatsapp: waResult ? waResult.delivered : "not attempted",
+            reason: result.reason,
+          },
         });
       }
     } else if (process.env.MAIL_DEBUG === "true") {
       return res.json({ message: generic, debug: { found: false } });
     }
 
-    // Generic response (when an account was found and emailed, or not found at all).
+    // Generic response (when an account was found and sent a link, or not found at all).
     res.json({ message: generic });
   } catch (err) {
     console.error(err);
