@@ -3,6 +3,7 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Association from "../models/Association.js";
 import { sendMail } from "../utils/mailer.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
 import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -84,6 +85,13 @@ router.post("/", async (req, res) => {
           html: shareMessage.replace(/\n/g, "<br/>"),
         }).catch((e) => console.error("guardian email failed:", e?.message));
       }
+      // A guardian usually has a phone but no email, so WhatsApp is the only
+      // channel that actually reaches most of them.
+      if (gPhone) {
+        sendWhatsApp({ to: gPhone, text: shareMessage }).catch((e) =>
+          console.error("guardian whatsapp failed:", e?.message)
+        );
+      }
 
       return res.status(201).json({
         client: child,
@@ -157,6 +165,13 @@ router.post("/", async (req, res) => {
         text: shareMessage,
         html: shareMessage.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("creds email failed:", e?.message));
+    }
+    // Most patients register with a phone and no email, so without this their
+    // login never reaches them and staff have to paste it by hand.
+    if (trimmedPhone) {
+      sendWhatsApp({ to: trimmedPhone, text: shareMessage }).catch((e) =>
+        console.error("creds whatsapp failed:", e?.message)
+      );
     }
 
     // Return the client plus credentials so the doctor can copy / share via WhatsApp
@@ -266,6 +281,22 @@ router.post("/:id/reset-password", async (req, res) => {
       (client.email ? `Email: ${client.email}\n` : client.phone ? `Phone: ${client.phone}\n` : "") +
       `Password: ${password}\n\n` +
       `Please sign in and change your password.`;
+
+    // Previously this reached the patient on no channel at all — the reset
+    // password was only handed back to staff to pass on manually.
+    if (client.email) {
+      sendMail({
+        to: client.email,
+        subject: "Your MyMedin password was reset",
+        text: shareMessage,
+        html: shareMessage.replace(/\n/g, "<br/>"),
+      }).catch((e) => console.error("reset email failed:", e?.message));
+    }
+    if (client.phone) {
+      sendWhatsApp({ to: client.phone, text: shareMessage }).catch((e) =>
+        console.error("reset whatsapp failed:", e?.message)
+      );
+    }
 
     res.json({
       credentials: { email: client.email || "", phone: client.phone || "", password },
