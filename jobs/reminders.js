@@ -2,6 +2,7 @@ import Appointment from "../models/Appointment.js";
 import Notification from "../models/Notification.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
 
 const CHECK_MS = 15 * 60 * 1000; // check every 15 minutes
 
@@ -34,7 +35,7 @@ async function sendWindow({ flag, ms, lead }) {
     [flag]: { $ne: true },
     date: { $gt: now, $lte: cutoff },
   })
-    .populate("client", "name email managed guardian guardianName guardianEmail")
+    .populate("client", "name email phone managed guardian guardianName guardianEmail guardianPhone")
     .populate("doctor", "name");
 
   for (const appt of due) {
@@ -70,15 +71,22 @@ async function sendWindow({ flag, ms, lead }) {
     }
 
     const to = c.managed ? c.guardianEmail : c.email;
+    const greet = c.managed ? c.guardianName || "there" : c.name;
+    const text = `Hi ${greet},\n\n${body}\n\nSee you then!`;
     if (to) {
-      const greet = c.managed ? c.guardianName || "there" : c.name;
-      const text = `Hi ${greet},\n\n${body}\n\nSee you then!`;
       sendMail({
         to,
         subject: "Appointment reminder — MyMedin",
         text,
         html: text.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("[reminder] email:", e?.message));
+    }
+
+    const phone = c.managed ? c.guardianPhone : c.phone;
+    if (phone) {
+      sendWhatsApp({ to: phone, text }).catch((e) =>
+        console.error("[reminder] whatsapp:", e?.message)
+      );
     }
 
     appt[flag] = true;

@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import Notification from "../models/Notification.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
 
 // Remind patients with an unpaid treatment balance every 15 days (in-app + push
 // + email). A per-patient timestamp (User.lastBalanceReminderAt) gates the
@@ -28,7 +29,7 @@ export async function runBalanceRemindersOnce() {
   let sent = 0;
   for (const row of rows) {
     const client = await User.findById(row._id).select(
-      "name email managed guardian guardianName guardianEmail lastBalanceReminderAt"
+      "name email phone managed guardian guardianName guardianEmail guardianPhone lastBalanceReminderAt"
     );
     if (!client) continue;
 
@@ -60,15 +61,22 @@ export async function runBalanceRemindersOnce() {
     }
 
     const to = client.managed ? client.guardianEmail : client.email;
+    const greet = client.managed ? client.guardianName || "there" : client.name;
+    const text = `Hi ${greet},\n\n${body}\n\nThank you,\nMyMedin`;
     if (to) {
-      const greet = client.managed ? client.guardianName || "there" : client.name;
-      const text = `Hi ${greet},\n\n${body}\n\nThank you,\nMyMedin`;
       sendMail({
         to,
         subject: "Outstanding balance — MyMedin",
         text,
         html: text.replace(/\n/g, "<br/>"),
       }).catch((e) => console.error("[balance] email:", e?.message));
+    }
+
+    const phone = client.managed ? client.guardianPhone : client.phone;
+    if (phone) {
+      sendWhatsApp({ to: phone, text }).catch((e) =>
+        console.error("[balance] whatsapp:", e?.message)
+      );
     }
 
     client.lastBalanceReminderAt = now;

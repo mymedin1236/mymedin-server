@@ -2,6 +2,7 @@ import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import { sendPush } from "./push.js";
 import { sendMail } from "./mailer.js";
+import { sendWhatsApp } from "./whatsapp.js";
 
 // Notify a whole clinic — the doctor AND all of their assistants — so staff
 // see every clinic-facing notification the doctor gets (in-app + web push).
@@ -51,7 +52,7 @@ export async function notifyPatient(clientOrId, { type, title, body, url }) {
   let c = clientOrId;
   if (!c || !c._id) {
     c = await User.findById(clientOrId)
-      .select("name email managed guardian guardianName guardianEmail")
+      .select("name email phone managed guardian guardianName guardianEmail guardianPhone")
       .catch(() => null);
   }
   if (!c) return;
@@ -65,11 +66,20 @@ export async function notifyPatient(clientOrId, { type, title, body, url }) {
   }
 
   const to = c.managed ? c.guardianEmail : c.email;
+  const greet = c.managed ? c.guardianName || "there" : c.name;
+  const text = `Hi ${greet},\n\n${body}`;
   if (to) {
-    const greet = c.managed ? c.guardianName || "there" : c.name;
-    const text = `Hi ${greet},\n\n${body}`;
     sendMail({ to, subject: title, text, html: text.replace(/\n/g, "<br/>") }).catch((e) =>
       console.error("[notifyPatient] email:", e?.message)
+    );
+  }
+
+  // Same message, same recipient, extra channel. For a managed dependent this
+  // is the guardian's number, matching how the email is routed above.
+  const phone = c.managed ? c.guardianPhone : c.phone;
+  if (phone) {
+    sendWhatsApp({ to: phone, text }).catch((e) =>
+      console.error("[notifyPatient] whatsapp:", e?.message)
     );
   }
 }
