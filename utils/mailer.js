@@ -16,16 +16,25 @@ console.log(
 // Sends an email via Resend. When no API key is configured, logs the contents
 // to the server console so flows (e.g. password reset links) stay testable in dev.
 // Never throws — email failures are logged and reported via the return value.
-export async function sendMail({ to, subject, text, html }) {
+// `attachments` is Resend's shape: [{ filename, content: Buffer }].
+export async function sendMail({ to, subject, text, html, attachments }) {
   if (!resend) {
     const reason = "RESEND_API_KEY not set";
     console.warn(
-      `\n[mailer] ${reason} — email NOT sent.\n  To: ${to}\n  Subject: ${subject}\n  ${text}\n`
+      `\n[mailer] ${reason} — email NOT sent.\n  To: ${to}\n  Subject: ${subject}\n  ${text}\n` +
+        (attachments?.length ? `  Attachments: ${attachments.map((a) => a.filename).join(", ")}\n` : "")
     );
     return { delivered: false, reason };
   }
   try {
-    const { data, error } = await resend.emails.send({ from: FROM, to, subject, text, html });
+    const { data, error } = await resend.emails.send({
+      from: FROM,
+      to,
+      subject,
+      text,
+      html,
+      ...(attachments?.length ? { attachments } : {}),
+    });
     if (error) {
       // Resend errors carry name/statusCode/message — log all of it so the cause is obvious.
       const reason = `${error.name || "error"}: ${error.message || JSON.stringify(error)}`;

@@ -4,6 +4,9 @@ import Treatment from "../models/Treatment.js";
 import User from "../models/User.js";
 import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
+import { sendMail } from "../utils/mailer.js";
+import { sendWhatsApp } from "../utils/whatsapp.js";
+import { buildInvoicePdf, buildInvoiceText, invoiceFilename, invoiceNumber } from "../utils/invoicePdf.js";
 
 const router = express.Router();
 router.use(protect, resolveClinic);
@@ -118,6 +121,114 @@ router.get("/outstanding", async (req, res) => {
     const map = {};
     for (const r of rows) map[String(r._id)] = Math.round(r.total);
     res.json(map);
+  } catch (err) {
+    handleErr(res, err);
+  }
+});
+
+// Load everything a patient invoice needs, scoped to the caller's clinic.
+// ?treatment=<id> narrows it to a single treatment; otherwise it covers all of
+// the patient's treatments. Returns null when the patient/treatment isn't ours.
+// Pass { pdf: false } when only the data is needed (e.g. the WhatsApp text).
+async function loadInvoice(req, { pdf: withPdf = true } = {}) {
+  const doctorId = clinicId(req.user);
+  if (!mongoose.isValidObjectId(req.params.clientId)) return null;
+  if (req.query.treatment && !mongoose.isValidObjectId(req.query.treatment)) return null;
+  const client = await User.findOne({ _id: req.params.clientId, role: "client", doctor: doctorId }).select(
+    "name email phone address managed guardianName guardianEmail guardianPhone"
+  );
+  if (!client) return null;
+  const filter = { doctor: doctorId, client: client._id };
+  if (req.query.treatment) filter._id = req.query.treatment;
+  const treatments = await Treatment.find(filter).sort({ date: 1 });
+  if (!treatments.length) return null;
+  const doctor = await User.findById(doctorId).select(
+    "name email phone address clinicName specialization city area"
+  );
+  const issuedAt = new Date();
+  const number = invoiceNumber(client, req.query.treatment, issuedAt);
+  const pdf = withPdf ? await buildInvoicePdf({ doctor, client, treatments, number, issuedAt }) : null;
+  return { doctor, client, treatments, number, pdf, filename: invoiceFilename(client, number) };
+}
+
+// GET /api/treatments/invoice/:clientId[?treatment=<id>]  (staff) -> invoice PDF
+// for download / print.
+router.get("/invoice/:clientId", async (req, res) => {
+  try {
+    if (!isStaff(req.user)) return res.status(403).json({ message: "Staff only" });
+    const inv = await loadInvoice(req);
+    if (!inv) return res.status(404).json({ message: "No treatments to invoice" });
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${inv.filename}"`,
+      "Content-Length": inv.pdf.length,
+    });
+    res.send(inv.pdf);
+  } catch (err) {
+    handleErr(res, err);
+  }
+});
+
+// POST /api/treatments/invoice/:clientId/email[?treatment=<id>]  (staff) ->
+// email the invoice PDF to the patient (or a dependent's guardian).
+router.post("/invoice/:clientId/email", async (req, res) => {
+  try {
+    if (!isStaff(req.user)) return res.status(403).json({ message: "Staff only" });
+    const inv = await loadInvoice(req);
+    if (!inv) return res.status(404).json({ message: "No treatments to invoice" });
+    const { client, doctor, treatments, number, pdf, filename } = inv;
+    const to = client.managed ? client.guardianEmail : client.email;
+    if (!to) {
+      return res.status(400).json({
+        message: client.managed
+          ? "This patient's guardian has no email address on file."
+          : "This patient has no email address on file.",
+      });
+    }
+    const greet = client.managed ? client.guardianName || "there" : client.name;
+    const clinic = doctor.clinicName || `Dr. ${doctor.name}`;
+    const due = treatments.reduce((s, t) => s + t.balance, 0);
+    const text =
+      `Hi ${greet},\n\nPlease find attached invoice ${number} from ${clinic}` +
+      `${client.managed ? ` for ${client.name}` : ""}.\n` +
+      (due > 0 ? `Balance due: ${money(due)}.\n` : "All charges are fully paid — thank you!\n") +
+      `\nRegards,\n${clinic}`;
+    const result = await sendMail({
+      to,
+      subject: `Invoice ${number} — ${clinic}`,
+      text,
+      html: text.replace(/\n/g, "<br/>"),
+      attachments: [{ filename, content: pdf }],
+    });
+    if (!result.delivered) return res.status(502).json({ message: "The email could not be sent. Please try again." });
+    res.json({ sentTo: to });
+  } catch (err) {
+    handleErr(res, err);
+  }
+});
+
+// POST /api/treatments/invoice/:clientId/whatsapp[?treatment=<id>]  (staff) ->
+// send the invoice summary as a WhatsApp text from the clinic's WAHA number to
+// the patient (or a dependent's guardian). Text only — WAHA Core can't send files.
+router.post("/invoice/:clientId/whatsapp", async (req, res) => {
+  try {
+    if (!isStaff(req.user)) return res.status(403).json({ message: "Staff only" });
+    const inv = await loadInvoice(req, { pdf: false });
+    if (!inv) return res.status(404).json({ message: "No treatments to invoice" });
+    const { client } = inv;
+    const to = client.managed ? client.guardianPhone : client.phone;
+    if (!to) {
+      return res.status(400).json({
+        message: client.managed
+          ? "This patient's guardian has no phone number on file."
+          : "This patient has no phone number on file.",
+      });
+    }
+    const result = await sendWhatsApp({ to, text: buildInvoiceText(inv) });
+    if (!result.delivered) {
+      return res.status(502).json({ message: "The WhatsApp message could not be sent. Please try again." });
+    }
+    res.json({ sentTo: to });
   } catch (err) {
     handleErr(res, err);
   }
