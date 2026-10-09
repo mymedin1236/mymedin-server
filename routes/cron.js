@@ -2,6 +2,7 @@ import express from "express";
 import { runRemindersOnce } from "../jobs/reminders.js";
 import { runBalanceRemindersOnce } from "../jobs/balanceReminders.js";
 import { generateInvoicesOnce } from "../jobs/invoices.js";
+import { checkWhatsAppOnce } from "../jobs/whatsappWatch.js";
 
 const router = express.Router();
 
@@ -23,7 +24,9 @@ const handler = async (req, res) => {
     // external schedule (each is self-gated so it only sends when actually due).
     const sent = await runRemindersOnce();
     const balanceRemindersSent = await runBalanceRemindersOnce();
-    res.json({ ok: true, sent, balanceRemindersSent });
+    // Also checks the WhatsApp link, so a sleeping instance still alerts.
+    const whatsapp = await checkWhatsAppOnce().catch(() => null);
+    res.json({ ok: true, sent, balanceRemindersSent, whatsapp });
   } catch (err) {
     console.error("[cron] reminder run failed:", err?.message);
     res.status(500).json({ message: "Server error" });

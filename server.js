@@ -27,11 +27,13 @@ import engagementsRoutes from "./routes/engagements.js";
 import notificationsRoutes from "./routes/notifications.js";
 import pushRoutes from "./routes/push.js";
 import cronRoutes from "./routes/cron.js";
+import webhooksRoutes from "./routes/webhooks.js";
 import uploadsRoutes from "./routes/uploads.js";
 import adminRoutes from "./routes/admin.js";
 import { startAppointmentReminders } from "./jobs/reminders.js";
 import { startBalanceReminders } from "./jobs/balanceReminders.js";
 import { startInvoiceJob } from "./jobs/invoices.js";
+import { startWhatsAppWatch } from "./jobs/whatsappWatch.js";
 import User from "./models/User.js";
 import Notification from "./models/Notification.js";
 import Appointment from "./models/Appointment.js";
@@ -149,6 +151,7 @@ app.use("/api/engagements", engagementsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/cron", cronRoutes);
+app.use("/api/webhooks", webhooksRoutes);
 app.use("/api/uploads", uploadsRoutes);
 app.use("/api/admin", adminRoutes);
 
@@ -164,6 +167,7 @@ connectDB()
     startAppointmentReminders();
     startBalanceReminders();
     startInvoiceJob();
+    startWhatsAppWatch();
     // Reconcile indexes so the email unique index becomes sparse (lets multiple
     // patients exist without an email). Safe + idempotent on a small collection.
     User.syncIndexes().catch((e) => console.error("User.syncIndexes failed:", e.message));
