@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import cors from "cors";
 import helmet from "helmet";
 import mongoSanitize from "express-mongo-sanitize";
-import { apiLimiter, loginLimiter, forgotLimiter, uploadLimiter } from "./middleware/rateLimit.js";
+import { apiLimiter, loginLimiter, forgotLimiter, otpVerifyLimiter, uploadLimiter } from "./middleware/rateLimit.js";
 import { connectDB } from "./config/db.js";
 import { whatsappConfigured } from "./utils/whatsapp.js";
 import { mailerConfigured } from "./utils/mailer.js";
@@ -109,6 +109,7 @@ app.use("/api", apiLimiter);
 app.use("/api/auth/login", loginLimiter);
 app.use("/api/auth/forgot-password", forgotLimiter);
 app.use("/api/auth/reset-password", forgotLimiter);
+app.use("/api/auth/reset-password-otp", otpVerifyLimiter);
 app.use("/api/uploads/avatar", uploadLimiter);
 
 // Read-only enforcement for admin "View as" (impersonation) sessions: a token

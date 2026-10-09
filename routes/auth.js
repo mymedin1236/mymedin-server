@@ -6,7 +6,7 @@ import AppointmentType from "../models/AppointmentType.js";
 import LoginEvent from "../models/LoginEvent.js";
 import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp, whatsappConfigured } from "../utils/whatsapp.js";
+import { sendWhatsApp, whatsappStatus, SIGNATURE } from "../utils/whatsapp.js";
 
 const router = express.Router();
 
@@ -192,115 +192,185 @@ router.post("/login", async (req, res) => {
   }
 });
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Every way a patient might type the same number (0319…, +92 319…, 92319…)
+// mapped to the formats we may have stored, so the lookup finds them.
+const CC = process.env.WHATSAPP_COUNTRY_CODE || "92";
+function phoneCandidates(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length < 10) return [];
+  const local = d.slice(-10); // 3191234567
+  return [...new Set([d, `0${local}`, `${CC}${local}`, `+${CC}${local}`])];
+}
 
-// POST /api/auth/forgot-password  -> send a time-limited reset link.
-// Accepts `identifier` (email OR phone), and delivers on every channel the
-// account has: email, WhatsApp, or both. Only when there is NEITHER an email on
-// file NOR a reachable phone is the client asked to supply an email via
-// `newEmail`, which we save to the account and use to send the link.
+const OTP_TTL_MS = 10 * 60 * 1000; // code valid for 10 minutes
+const OTP_MAX_ATTEMPTS = 5; // wrong guesses before the code is burned
+const OTP_RESEND_MS = 60 * 1000; // minimum gap between codes
+const OTP_MAX_SENDS = 5; // codes per phone per hour
+const otpHash = (userId, code) =>
+  crypto.createHash("sha256").update(`${userId}:${code}`).digest("hex");
+
+const clientBase = () =>
+  (process.env.CLIENT_ORIGIN || "http://localhost:5173").split(",")[0].trim().replace(/\/+$/, "");
+
+// POST /api/auth/forgot-password
+// - Email identifier -> a time-limited reset link by email (method: "link").
+// - Phone identifier -> a 6-digit code on WhatsApp (method: "otp"), entered on
+//   the same screen via /reset-password-otp. If WhatsApp can't deliver it and
+//   the account has an email, the reset link goes there as a backup.
+// Codes and links only ever go to contact details already on the account — we
+// never accept a new address here, so knowing someone's phone number is not
+// enough to take over their account. Responses are identical whether or not
+// the account exists, so the page can't be used to probe who is registered.
 router.post("/forgot-password", async (req, res) => {
   try {
-    const { identifier, email, newEmail } = req.body;
+    const { identifier, email } = req.body;
     const raw = (identifier ?? email ?? "").toString().trim();
     if (!raw) return res.status(400).json({ message: "Email or phone is required" });
 
-    // Email lookups contain "@"; otherwise treat it as a phone number.
     const byEmail = raw.includes("@");
-    const user = byEmail
-      ? await User.findOne({ email: raw.toLowerCase() })
-      : await User.findOne({ phone: raw.replace(/\D/g, "") });
 
-    const generic = "If that account exists, a reset link has been sent.";
-
-    if (user) {
-      let to = user.email;
-      // A phone-only patient can now be reached directly, so we no longer have
-      // to demand an email address off them just to deliver a link.
-      const canWhatsApp = whatsappConfigured && !!user.phone;
-
-      // No email AND no way to WhatsApp them: collect an email, save it, send there.
-      if (!to && !canWhatsApp) {
-        const provided = (newEmail || "").toString().trim().toLowerCase();
-        if (!provided) {
-          // Signal the client to ask for an email for this account.
-          return res.json({
-            needEmail: true,
-            message: "We don't have an email on file for this account. Enter one to receive your reset link.",
-          });
-        }
-        if (!EMAIL_RE.test(provided)) {
-          return res.status(400).json({ message: "Enter a valid email address." });
-        }
-        const clash = await User.findOne({ email: provided, _id: { $ne: user._id } });
-        if (clash) {
-          return res.status(409).json({ message: "That email is already used by another account." });
-        }
-        user.email = provided; // persisted with the token save below
-        to = provided;
+    if (byEmail) {
+      const user = await User.findOne({ email: raw.toLowerCase() });
+      if (user) {
+        const token = crypto.randomBytes(32).toString("hex");
+        user.resetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
+        user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        await user.save();
+        const r = await sendResetLink(user.email, token);
+        if (!r.delivered) console.error(`[forgot-password] link for ${user._id} NOT delivered: ${r.reason}`);
       }
-
-      const token = crypto.randomBytes(32).toString("hex");
-      user.resetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
-      user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-      await user.save();
-
-      const base = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
-        .split(",")[0]
-        .trim()
-        .replace(/\/+$/, "");
-      const link = `${base}/reset-password?token=${token}`;
-
-      // Send on every channel we have for them. Either arriving is enough, so
-      // the link is not lost to a dead mailer or a sleeping gateway.
-      const emailResult = to
-        ? await sendMail({
-            to,
-            subject: "Reset your MyMedin password",
-            text: `We received a request to reset your password.\n\nUse this link within 1 hour:\n${link}\n\nIf you didn't request this, you can ignore this email.`,
-            html: `<p>We received a request to reset your password.</p>
-               <p>Use this link within 1 hour:</p>
-               <p><a href="${link}">${link}</a></p>
-               <p>If you didn't request this, you can ignore this email.</p>`,
-          })
-        : null;
-      const waResult = canWhatsApp
-        ? await sendWhatsApp({
-            to: user.phone,
-            text:
-              `We received a request to reset your MyMedin password.\n\n` +
-              `Use this link within 1 hour:\n${link}\n\n` +
-              `If you didn't request this, you can ignore this message.`,
-          })
-        : null;
-
-      const result = {
-        delivered: !!(emailResult?.delivered || waResult?.delivered),
-        reason: [emailResult?.reason, waResult?.reason].filter(Boolean).join("; ") || null,
-      };
-      if (!result.delivered) {
-        console.error(`[forgot-password] reset link for ${user._id} was NOT delivered: ${result.reason}`);
-      }
-      // Opt-in diagnostics: set MAIL_DEBUG=true to learn whether the link
-      // actually went out on either channel (and why not).
-      if (process.env.MAIL_DEBUG === "true") {
-        return res.json({
-          message: generic,
-          debug: {
-            found: true,
-            delivered: result.delivered,
-            email: emailResult ? emailResult.delivered : "not attempted",
-            whatsapp: waResult ? waResult.delivered : "not attempted",
-            reason: result.reason,
-          },
-        });
-      }
-    } else if (process.env.MAIL_DEBUG === "true") {
-      return res.json({ message: generic, debug: { found: false } });
+      return res.json({ method: "link", message: "If that account exists, a reset link has been sent." });
     }
 
-    // Generic response (when an account was found and sent a link, or not found at all).
-    res.json({ message: generic });
+    const candidates = phoneCandidates(raw);
+    if (!candidates.length) return res.status(400).json({ message: "Enter a valid phone number." });
+
+    // Checked before the account lookup, so the answer reveals nothing about
+    // whether the number is registered — only that WhatsApp is unavailable.
+    const wa = await whatsappStatus();
+    if (!wa.ok) {
+      console.error(`[forgot-password] WhatsApp unavailable: ${wa.status}`);
+      return res.status(503).json({
+        message:
+          "We can't send WhatsApp codes right now. Please try again in a few minutes, or contact your clinic to reset your password.",
+      });
+    }
+
+    const generic = {
+      method: "otp",
+      resendIn: OTP_RESEND_MS / 1000,
+      expiresIn: OTP_TTL_MS / 1000,
+      message: "If that number is registered, we've sent a 6-digit code to it on WhatsApp.",
+    };
+
+    const user = await User.findOne({ phone: { $in: candidates } });
+    if (!user) return res.json(generic);
+
+    const now = Date.now();
+    const o = user.resetOtp || {};
+    // Over the resend gap or hourly cap: send nothing, but answer exactly as
+    // for any other number so the limits don't reveal that this one exists.
+    // (The page enforces the 60s resend timer on its side.)
+    const inWindow = o.windowStart && now - o.windowStart.getTime() < 60 * 60 * 1000;
+    if (
+      (o.sentAt && now - o.sentAt.getTime() < OTP_RESEND_MS) ||
+      (inWindow && (o.sends || 0) >= OTP_MAX_SENDS)
+    ) {
+      return res.json(generic);
+    }
+
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+    user.resetOtp = {
+      hash: otpHash(user._id, code),
+      expires: new Date(now + OTP_TTL_MS),
+      attempts: 0,
+      sentAt: new Date(now),
+      sends: inWindow ? (o.sends || 0) + 1 : 1,
+      windowStart: inWindow ? o.windowStart : new Date(now),
+    };
+    await user.save();
+
+    const waResult = await sendWhatsApp({
+      to: user.phone,
+      text:
+        `🔐 *MyMedin password reset*\n\n` +
+        `Your code is: *${code}*\n\n` +
+        `• Valid for 10 minutes\n` +
+        `• Never share this code with anyone — MyMedin staff will never ask for it\n\n` +
+        `If you didn't request this, you can ignore this message.\n\n${SIGNATURE}`,
+    });
+    if (!waResult.delivered) {
+      console.error(`[forgot-password] OTP for ${user._id} NOT delivered: ${waResult.reason}`);
+      // Backup: email them a link if they have an address on file.
+      if (user.email) {
+        const token = crypto.randomBytes(32).toString("hex");
+        user.resetTokenHash = crypto.createHash("sha256").update(token).digest("hex");
+        user.resetTokenExpires = new Date(now + 60 * 60 * 1000);
+        await user.save();
+        await sendResetLink(user.email, token);
+      }
+    }
+    res.json(generic);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+async function sendResetLink(to, token) {
+  const link = `${clientBase()}/reset-password?token=${token}`;
+  return sendMail({
+    to,
+    subject: "Reset your MyMedin password",
+    text: `We received a request to reset your password.\n\nUse this link within 1 hour:\n${link}\n\nIf you didn't request this, you can ignore this email.`,
+    html: `<p>We received a request to reset your password.</p>
+           <p>Use this link within 1 hour:</p>
+           <p><a href="${link}">${link}</a></p>
+           <p>If you didn't request this, you can ignore this email.</p>`,
+  });
+}
+
+// POST /api/auth/reset-password-otp  -> set a new password with a WhatsApp code
+router.post("/reset-password-otp", async (req, res) => {
+  try {
+    const { identifier, code, password } = req.body;
+    const c = String(code || "").replace(/\D/g, "");
+    if (!identifier || c.length !== 6 || !password) {
+      return res.status(400).json({ message: "Phone number, 6-digit code and new password are required" });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+    const invalid = { message: "That code is invalid or has expired. Request a new one." };
+    const candidates = phoneCandidates(identifier);
+    const user = candidates.length ? await User.findOne({ phone: { $in: candidates } }) : null;
+    const o = user?.resetOtp;
+    if (!o?.hash || !o.expires || o.expires < new Date() || (o.attempts || 0) >= OTP_MAX_ATTEMPTS) {
+      return res.status(400).json(invalid);
+    }
+
+    const ok = crypto.timingSafeEqual(Buffer.from(otpHash(user._id, c)), Buffer.from(o.hash));
+    if (!ok) {
+      // Count the miss atomically; burn the code once the limit is hit.
+      const attempts = (o.attempts || 0) + 1;
+      const set = { "resetOtp.attempts": attempts };
+      if (attempts >= OTP_MAX_ATTEMPTS) set["resetOtp.hash"] = null;
+      await User.updateOne({ _id: user._id, "resetOtp.hash": o.hash }, { $set: set });
+      const left = OTP_MAX_ATTEMPTS - attempts;
+      return res.status(400).json({
+        message: left > 0
+          ? `Incorrect code. ${left} attempt${left === 1 ? "" : "s"} left.`
+          : "Too many incorrect attempts. Request a new code.",
+      });
+    }
+
+    user.password = password; // re-hashed by the pre-save hook
+    user.resetOtp = { sends: o.sends, windowStart: o.windowStart }; // keep the resend cap
+    user.resetTokenHash = undefined;
+    user.resetTokenExpires = undefined;
+    await user.save();
+    res.json({ message: "Password updated. You can now sign in." });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });

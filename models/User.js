@@ -114,6 +114,16 @@ const userSchema = new mongoose.Schema(
     // Password reset (hashed token + expiry)
     resetTokenHash: { type: String },
     resetTokenExpires: { type: Date },
+    // Password reset by WhatsApp one-time code (phone accounts). Only the hash
+    // is stored; `resetOtpAttempts` caps guesses, `resetOtpSends` caps resends.
+    resetOtp: {
+      hash: { type: String },
+      expires: { type: Date },
+      attempts: { type: Number, default: 0 },
+      sentAt: { type: Date },
+      sends: { type: Number, default: 0 },
+      windowStart: { type: Date },
+    },
 
     // E-signed service agreement (doctor accepts the terms in-app instead of on
     // paper). Records who signed, when, and which version of the terms.
@@ -159,6 +169,7 @@ userSchema.methods.toJSON = function () {
   delete obj.password;
   delete obj.resetTokenHash;
   delete obj.resetTokenExpires;
+  delete obj.resetOtp;
   return obj;
 };
 

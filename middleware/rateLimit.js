@@ -18,6 +18,15 @@ export const forgotLimiter = rateLimit({
   message: { message: "Too many requests. Please wait a few minutes and try again." },
 });
 
+// Entering a WhatsApp reset code — room for a typo or two, and the per-code
+// attempt cap in routes/auth.js is the real guard against guessing.
+export const otpVerifyLimiter = rateLimit({
+  ...base,
+  windowMs: 15 * 60 * 1000,
+  limit: 15,
+  message: { message: "Too many attempts. Please wait a few minutes and try again." },
+});
+
 // Public avatar upload (unauthenticated for registration) — keep abuse low.
 export const uploadLimiter = rateLimit({
   ...base,
