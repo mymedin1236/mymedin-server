@@ -5,7 +5,7 @@ import User from "../models/User.js";
 import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp } from "../utils/whatsapp.js";
+import { sendWhatsApp, SIGNATURE } from "../utils/whatsapp.js";
 import { buildInvoicePdf, buildInvoiceText, invoiceFilename, invoiceNumber } from "../utils/invoicePdf.js";
 
 const router = express.Router();
@@ -26,14 +26,38 @@ const capFirst = (s) => {
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
 };
 
-// Notify the patient (in-app + push + email) that a payment was collected.
-// Fire-and-forget: never block or fail the payment request on a notify error.
-async function notifyPaymentReceived(tr, amount, actor) {
+const methodLabel = (m) => (m === "online" ? "Online transfer" : m === "cash" ? "Cash" : "");
+const fmtPaidOn = (d) =>
+  new Date(d || Date.now()).toLocaleString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: process.env.CLINIC_TZ || "Asia/Karachi",
+  });
+
+// Bulleted WhatsApp receipt — one fact per line so it reads at a glance.
+function paymentWhatsAppText({ greet, heading, rows, footer }) {
+  return [`Hi ${greet},`, "", `💳 *${heading}*`, "", ...rows, "", footer, "", SIGNATURE].join("\n");
+}
+
+// Notify the patient (in-app + push + email + WhatsApp) and the doctor
+// (WhatsApp, plus in-app/push when an assistant collected it) that a payment
+// was collected. Fire-and-forget: never block or fail the payment request.
+async function notifyPaymentReceived(tr, amount, actor, method) {
   try {
     if (!amount || amount <= 0) return;
-    const doctor = await User.findById(tr.doctor).select("name").catch(() => null);
+    const doctor = await User.findById(tr.doctor).select("name phone").catch(() => null);
+    const patient = await User.findById(tr.client)
+      .select("name email phone managed guardian guardianName guardianEmail guardianPhone")
+      .catch(() => null);
     const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const settled = tr.balance <= 0;
+    const how = methodLabel(method);
+    const paidOn = fmtPaidOn();
+    const balanceRow = settled ? "✅ *Balance:* Fully cleared" : `🧾 *Remaining balance:* ${money(tr.balance)}`;
 
     // Patient notification.
     const body =
@@ -41,18 +65,36 @@ async function notifyPaymentReceived(tr, amount, actor) {
       (settled
         ? "Your balance is now fully cleared — thank you!"
         : `Remaining balance: ${money(tr.balance)}.`);
-    await notifyPatient(tr.client, {
-      type: "payment_received",
-      title: "Payment received",
-      body,
-      url: "/client/treatments",
-    });
+    if (patient) {
+      await notifyPatient(patient, {
+        type: "payment_received",
+        title: "Payment received",
+        body,
+        url: "/client/treatments",
+        whatsapp: (greet) =>
+          paymentWhatsAppText({
+            greet,
+            heading: "Payment Received",
+            rows: [
+              ...(patient.managed ? [`👤 *Patient:* ${patient.name}`] : []),
+              `💰 *Amount:* ${money(amount)}`,
+              `🩺 *Treatment:* ${tr.procedure}`,
+              `👨‍⚕️ *Doctor:* ${drName}`,
+              ...(how ? [`💵 *Method:* ${how}`] : []),
+              `📅 *Date:* ${paidOn}`,
+              balanceRow,
+            ],
+            footer: "Thank you for your payment.",
+          }),
+      });
+    }
+
+    const patientName = patient?.name || "a patient";
+    const collectedBy = actor?.name && String(actor._id) !== String(tr.doctor) ? actor.name : "You";
 
     // When an ASSISTANT collected the payment, notify the doctor (clinic owner)
     // so he's aware of money collected on his behalf.
     if (actor?.role === "assistant" && String(actor._id) !== String(tr.doctor)) {
-      const patient = await User.findById(tr.client).select("name").catch(() => null);
-      const patientName = patient?.name || "a patient";
       const staffBody =
         `${actor.name} collected ${money(amount)} from ${patientName} for ${tr.procedure}. ` +
         (settled ? "Balance is now cleared." : `Remaining balance: ${money(tr.balance)}.`);
@@ -62,6 +104,27 @@ async function notifyPaymentReceived(tr, amount, actor) {
         body: staffBody,
         url: `/clients/${tr.client}`,
       });
+    }
+
+    // WhatsApp the doctor a receipt for every collection, whoever recorded it.
+    if (doctor?.phone) {
+      const text = paymentWhatsAppText({
+        greet: drName,
+        heading: "Payment Collected",
+        rows: [
+          `👤 *Patient:* ${patientName}`,
+          `💰 *Amount:* ${money(amount)}`,
+          `🩺 *Treatment:* ${tr.procedure}`,
+          ...(how ? [`💵 *Method:* ${how}`] : []),
+          `🙋 *Collected by:* ${collectedBy}`,
+          `📅 *Date:* ${paidOn}`,
+          balanceRow,
+        ],
+        footer: "This payment has been recorded in your clinic finances.",
+      });
+      sendWhatsApp({ to: doctor.phone, text }).catch((e) =>
+        console.error("[payment notify] doctor whatsapp:", e?.message)
+      );
     }
   } catch (e) {
     console.error("[payment notify]", e?.message);
@@ -372,7 +435,7 @@ router.post("/", async (req, res) => {
       paid: deposit >= total && total > 0,
       date,
     });
-    if (deposit > 0) notifyPaymentReceived(tr, deposit, req.user); // fire-and-forget
+    if (deposit > 0) notifyPaymentReceived(tr, deposit, req.user, upfrontMethod); // fire-and-forget
     res.status(201).json(tr);
   } catch (err) {
     handleErr(res, err);
@@ -476,7 +539,7 @@ router.post("/:id/payments", async (req, res) => {
     tr.payments.push({ amount, note: req.body.note, method, date: req.body.date || new Date() });
     tr.paid = tr.paidAmount >= tr.cost && tr.cost > 0;
     await tr.save();
-    if (amount > 0) notifyPaymentReceived(tr, amount, req.user); // fire-and-forget; skip for a 0 log
+    if (amount > 0) notifyPaymentReceived(tr, amount, req.user, method); // fire-and-forget; skip for a 0 log
     res.status(201).json(tr);
   } catch (err) {
     handleErr(res, err);

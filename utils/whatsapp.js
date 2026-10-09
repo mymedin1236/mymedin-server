@@ -22,6 +22,9 @@ console.log(
     (whatsappConfigured ? ` session="${SESSION}"` : " (set WHATSAPP_ENABLED=true + WAHA_* to enable)")
 );
 
+// Sign-off appended to every formatted WhatsApp/email message.
+export const SIGNATURE = "Powered by\n*Mymedin.com* - bookings and clinic management made easy";
+
 // Turn a stored phone number into a WAHA chat id ("923001234567@c.us").
 // Returns null when the number can't be made sense of, so callers skip it
 // rather than firing a doomed request.

@@ -47,8 +47,9 @@ export async function notifyUser(userId, { type, title, body, url, email }) {
 
 // Notify a single patient (in-app + web push + email). Accepts a client id or a
 // loaded User doc. For a managed dependent, everything routes to the linked
-// guardian's account + email instead.
-export async function notifyPatient(clientOrId, { type, title, body, url }) {
+// guardian's account + email instead. `whatsapp` optionally replaces the
+// WhatsApp text (e.g. a bulleted version); otherwise the email text is reused.
+export async function notifyPatient(clientOrId, { type, title, body, url, whatsapp }) {
   let c = clientOrId;
   if (!c || !c._id) {
     c = await User.findById(clientOrId)
@@ -78,7 +79,8 @@ export async function notifyPatient(clientOrId, { type, title, body, url }) {
   // is the guardian's number, matching how the email is routed above.
   const phone = c.managed ? c.guardianPhone : c.phone;
   if (phone) {
-    sendWhatsApp({ to: phone, text }).catch((e) =>
+    const waText = typeof whatsapp === "function" ? whatsapp(greet) : text;
+    sendWhatsApp({ to: phone, text: waText }).catch((e) =>
       console.error("[notifyPatient] whatsapp:", e?.message)
     );
   }
