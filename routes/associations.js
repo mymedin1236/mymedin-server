@@ -64,6 +64,18 @@ router.post("/request", requireRole("client"), async (req, res) => {
       return res.status(409).json({ message: "You already have a pending request with this doctor." });
     }
 
+    // The doctor chose to accept every patient: link straight away, no review.
+    if (doctor.autoApproveAssociations) {
+      const association = await linkPatient(me._id, doctor._id, "client");
+      await notifyClinic(doctor._id, {
+        type: "association_joined",
+        title: "New patient joined",
+        body: `${me.name} has joined your clinic.`,
+        url: "/clients",
+      });
+      return res.status(201).json(association);
+    }
+
     const association = await Association.create({
       client: me._id,
       doctor: doctor._id,

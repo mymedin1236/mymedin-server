@@ -532,7 +532,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     const doctorId = clinicId(req.user);
     const [owner, appointmentTypes] = await Promise.all([
       User.findById(doctorId)
-        .select("clinicName availability slotDuration autoConfirmBookings dayOverrides location")
+        .select("clinicName availability slotDuration autoConfirmBookings autoApproveAssociations dayOverrides location")
         .lean(),
       AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
     ]);
@@ -542,6 +542,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       availability: owner.availability || [],
       slotDuration: owner.slotDuration || 15,
       autoConfirmBookings: !!owner.autoConfirmBookings,
+      autoApproveAssociations: !!owner.autoApproveAssociations,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,
@@ -595,6 +596,15 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       }
       owner.autoConfirmBookings = !!b.autoConfirmBookings;
     }
+    // Same rule for who may join the clinic's patient list without review.
+    if (b.autoApproveAssociations !== undefined) {
+      if (req.user.role !== "doctor") {
+        return res.status(403).json({
+          message: "Only the doctor can change how patient requests are approved.",
+        });
+      }
+      owner.autoApproveAssociations = !!b.autoApproveAssociations;
+    }
     if (Array.isArray(b.dayOverrides)) {
       // Keep only well-formed, current-or-future entries so the list can't grow
       // unbounded with stale past exceptions.
@@ -639,6 +649,7 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       availability: owner.availability || [],
       slotDuration: owner.slotDuration || 15,
       autoConfirmBookings: !!owner.autoConfirmBookings,
+      autoApproveAssociations: !!owner.autoApproveAssociations,
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,

@@ -80,6 +80,9 @@ const userSchema = new mongoose.Schema(
     // booking is confirmed on the spot. Either way the slot and same-day
     // conflict checks run first, so auto-confirm cannot double-book.
     autoConfirmBookings: { type: Boolean, default: false },
+    // How a patient's request to join this clinic is handled. false (default)
+    // keeps the request-then-approve flow; true links the patient on the spot.
+    autoApproveAssociations: { type: Boolean, default: false },
     // Default slot length in minutes, used by any bracket that names no type.
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },
