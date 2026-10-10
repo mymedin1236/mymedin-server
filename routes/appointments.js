@@ -344,6 +344,37 @@ const patientDayConflict = async (clientId, doctorId, date, exceptId) => {
   return Appointment.findOne(query);
 };
 
+// The patient's appointment (with ANY doctor) that overlaps [date, date+duration),
+// if there is one. A patient with several doctors must not be booked with the
+// dentist and the eye specialist at the same time. Same interval arithmetic as
+// slotConflict, but keyed on the patient instead of the doctor. Bookings with
+// no stored duration (pre-types) count as the default slot length.
+const patientTimeConflict = async (clientId, date, duration, exceptId) => {
+  const startMs = new Date(date).getTime();
+  const endMs = startMs + (Number(duration) || DEFAULT_SLOT_MINUTES) * 60000;
+  const query = {
+    client: clientId,
+    status: { $in: ACTIVE },
+    date: { $gt: new Date(startMs - MAX_APPOINTMENT_MINUTES * 60000), $lt: new Date(endMs) },
+    $expr: {
+      $gt: [
+        { $add: ["$date", { $multiply: [{ $ifNull: ["$duration", DEFAULT_SLOT_MINUTES] }, 60000] }] },
+        new Date(startMs),
+      ],
+    },
+  };
+  if (exceptId) query._id = { $ne: exceptId };
+  return Appointment.findOne(query).populate("doctor", "name");
+};
+
+// 409 body naming the clashing appointment, so staff/patients know what to move.
+const patientBusyBody = (clash, who = "This patient") => ({
+  message: `${who} already ${who === "You" ? "have" : "has"} an appointment with Dr. ${
+    clash.doctor?.name || "another doctor"
+  } at ${fmtWhen(clash.date)} that overlaps this time.`,
+  code: "PATIENT_TIME_TAKEN",
+});
+
 // A patient owns an appointment if it's theirs, or it's for a dependent they manage.
 const clientOwnsAppt = async (userId, appt) => {
   if (String(appt.client) === String(userId)) return true;
@@ -545,6 +576,8 @@ router.post("/", async (req, res) => {
         code: "PATIENT_DAY_TAKEN",
       });
     }
+    const clash = client && (await patientTimeConflict(client, date, typing.duration));
+    if (clash) return res.status(409).json(patientBusyBody(clash));
     // Slot is free: now register (or link) the quick-add patient.
     let created = null;
     if (quickAdd) {
@@ -681,6 +714,10 @@ router.post("/request", async (req, res) => {
         code: "PATIENT_DAY_TAKEN",
       });
     }
+    const clash = await patientTimeConflict(patientId, date, slot?.duration);
+    if (clash) {
+      return res.status(409).json(patientBusyBody(clash, dep ? patientName : "You"));
+    }
 
     // A clinic that trusts its published hours can skip the approval step and
     // have the booking confirmed on the spot. The slot and same-day conflict
@@ -775,6 +812,8 @@ router.patch("/:id/confirm", async (req, res) => {
         code: "PATIENT_DAY_TAKEN",
       });
     }
+    const clash = await patientTimeConflict(appt.client, appt.date, appt.duration, appt._id);
+    if (clash) return res.status(409).json(patientBusyBody(clash));
 
     appt.status = "scheduled";
     appt.remind24hSent = false;
@@ -905,6 +944,11 @@ router.put("/:id", async (req, res) => {
         code: "PATIENT_DAY_TAKEN",
       });
     }
+    const clash =
+      date &&
+      ACTIVE.includes(nextStatus) &&
+      (await patientTimeConflict(current.client, date, nextDuration, current._id));
+    if (clash) return res.status(409).json(patientBusyBody(clash));
 
     const dateChanged = movingDate;
 
@@ -1018,6 +1062,11 @@ router.patch("/:id/reschedule", async (req, res) => {
         message: "You already have another appointment on this day.",
         code: "PATIENT_DAY_TAKEN",
       });
+    }
+    const clash = await patientTimeConflict(appt.client, date, slot?.duration ?? appt.duration, appt._id);
+    if (clash) {
+      const mine = String(appt.client) === String(req.user._id);
+      return res.status(409).json(patientBusyBody(clash, mine ? "You" : "This patient"));
     }
 
     // Keep the current status — a pending request stays pending (awaiting
