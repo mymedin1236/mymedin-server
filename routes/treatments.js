@@ -7,6 +7,7 @@ import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
 import { sendMail } from "../utils/mailer.js";
 import { sendWhatsApp, SIGNATURE } from "../utils/whatsapp.js";
 import { buildInvoicePdf, buildInvoiceText, invoiceFilename, invoiceNumber } from "../utils/invoicePdf.js";
+import { isClinicPatient, findClinicPatient } from "../utils/careTeam.js";
 
 const router = express.Router();
 router.use(protect, resolveClinic);
@@ -197,7 +198,9 @@ async function loadInvoice(req, { pdf: withPdf = true } = {}) {
   const doctorId = clinicId(req.user);
   if (!mongoose.isValidObjectId(req.params.clientId)) return null;
   if (req.query.treatment && !mongoose.isValidObjectId(req.query.treatment)) return null;
-  const client = await User.findOne({ _id: req.params.clientId, role: "client", doctor: doctorId }).select(
+  const client = await findClinicPatient(
+    doctorId,
+    req.params.clientId,
     "name email phone address managed guardianName guardianEmail guardianPhone"
   );
   if (!client) return null;
@@ -374,6 +377,9 @@ router.post("/", async (req, res) => {
     } = req.body;
     if (!client || !procedure) {
       return res.status(400).json({ message: "client and procedure are required" });
+    }
+    if (!mongoose.isValidObjectId(client) || !(await isClinicPatient(clinicId(req.user), client))) {
+      return res.status(404).json({ message: "Patient not found at this clinic" });
     }
     // Normalise casing so careless entry doesn't reach the record.
     const procedureClean = capWords(procedure);

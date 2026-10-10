@@ -14,11 +14,16 @@ const associationSchema = new mongoose.Schema(
     initiatedBy: { type: String, enum: ["client", "doctor"], required: true },
     respondedAt: { type: Date },
     endedAt: { type: Date },
+    // This clinic's private notes on the patient. A patient may be with several
+    // doctors, so notes can't live on the shared User record — the dentist must
+    // not read the eye specialist's notes. Unset means "never written here".
+    medicalNotes: { type: String },
   },
   { timestamps: true }
 );
 
 associationSchema.index({ doctor: 1, status: 1 });
 associationSchema.index({ client: 1, status: 1 });
+associationSchema.index({ client: 1, doctor: 1, status: 1 });
 
 export default mongoose.model("Association", associationSchema);

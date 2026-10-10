@@ -11,6 +11,14 @@ import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, resolveClinicSoft, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 import { sendWhatsApp } from "../utils/whatsapp.js";
+import {
+  isClinicPatient,
+  linkPatient,
+  findExistingByContact,
+  existingPatientConflict,
+  announceLink,
+  createClinicPatient,
+} from "../utils/careTeam.js";
 
 const router = express.Router();
 // GET /api/appointments/day-grid?date=YYYY-MM-DD&doctors=id1,id2
@@ -320,11 +328,18 @@ const dayRange = (date) => {
   return { start, end };
 };
 
-// True if the patient already has an active (scheduled/pending) appointment that day.
-// One appointment per patient per day keeps the schedule sane.
-const patientDayConflict = async (clientId, date, exceptId) => {
+// True if the patient already has an active (scheduled/pending) appointment that
+// day WITH THIS DOCTOR. One per doctor per day keeps each diary sane, while a
+// patient with several doctors can still see the dentist and the eye
+// specialist on the same day.
+const patientDayConflict = async (clientId, doctorId, date, exceptId) => {
   const { start, end } = dayRange(date);
-  const query = { client: clientId, status: { $in: ACTIVE }, date: { $gte: start, $lt: end } };
+  const query = {
+    client: clientId,
+    doctor: doctorId,
+    status: { $in: ACTIVE },
+    date: { $gte: start, $lt: end },
+  };
   if (exceptId) query._id = { $ne: exceptId };
   return Appointment.findOne(query);
 };
@@ -397,14 +412,21 @@ router.get("/", async (req, res) => {
 // GET /api/appointments/booked?from=ISO&to=ISO&exclude=<id>
 // Returns the datetimes of scheduled appointments for the relevant clinic within
 // [from, to), so the UI can show which slots are taken. Scoped by role:
-// staff -> their clinic; client -> their associated doctor.
+// staff -> their clinic; client -> ?doctor=<id> (one of their doctors), or
+// their primary doctor when omitted.
 router.get("/booked", async (req, res) => {
   try {
-    const doctorId = isStaff(req.user)
-      ? clinicId(req.user)
-      : req.user.role === "client"
-      ? req.user.doctor
-      : null;
+    let doctorId = null;
+    if (isStaff(req.user)) doctorId = clinicId(req.user);
+    else if (req.user.role === "client") {
+      const wanted = req.query.doctor;
+      if (wanted) {
+        if (!mongoose.isValidObjectId(wanted) || !(await isClinicPatient(wanted, req.user._id))) {
+          return res.status(403).json({ message: "You are not associated with this doctor." });
+        }
+        doctorId = wanted;
+      } else doctorId = req.user.doctor;
+    }
     if (!doctorId) return res.json({ slots: [] });
 
     const q = { doctor: doctorId, status: { $in: ACTIVE } };
@@ -442,6 +464,45 @@ router.get("/booked", async (req, res) => {
   }
 });
 
+// Normalise a phone typed in or read from the address book to the 11-digit
+// local form the app uses: "+92 300-1234567" / "0092..." / "300..." -> "03001234567".
+const normalisePhone = (raw) => {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("0092")) d = d.slice(4);
+  else if (d.startsWith("92") && d.length === 12) d = d.slice(2);
+  if (d.length === 10 && d.startsWith("3")) d = "0" + d;
+  return d;
+};
+
+// Validate a quick-add patient from the booking form. Returns one of:
+//   { existing }  – already registered with another doctor: link, don't duplicate
+//   { fields }    – new person: create once the slot is confirmed free
+//   { status, error } – reject
+// `link: true` is staff confirming they want an existing patient added.
+const prepareQuickAdd = async (newClient, doctorId) => {
+  const name = String(newClient?.name || "").trim();
+  const phone = normalisePhone(newClient?.phone);
+  const email = String(newClient?.email || "").trim().toLowerCase() || undefined;
+  if (!name) return { status: 400, error: { message: "Patient name is required." } };
+  if (!/^0\d{10}$/.test(phone)) {
+    return {
+      status: 400,
+      error: { message: "Phone number must be 11 digits and start with 0 (e.g. 03001234567)." },
+    };
+  }
+  const existing = await findExistingByContact(email, phone);
+  if (existing) {
+    const conflict = await existingPatientConflict(existing, doctorId);
+    // Already ours: just book them.
+    if (conflict.code === "ALREADY_PATIENT") return { existing, alreadyLinked: true };
+    // With another doctor: book only once staff have confirmed the link, so
+    // nobody is silently attached to a clinic because of a typo in the phone.
+    if (conflict.code === "PATIENT_EXISTS" && newClient.link === true) return { existing };
+    return { status: 409, error: conflict };
+  }
+  return { fields: { name, phone, email } };
+};
+
 // POST /api/appointments (clinic staff create)
 router.post("/", async (req, res) => {
   try {
@@ -449,12 +510,25 @@ router.post("/", async (req, res) => {
       return res.status(403).json({ message: "Only clinic staff can create appointments" });
     }
     const doctorId = clinicId(req.user);
-    const { client, date, reason, notes, appointmentType } = req.body;
-    if (!client || !date) {
+    const { date, reason, notes, appointmentType, newClient } = req.body;
+    let { client } = req.body;
+    if ((!client && !newClient) || !date) {
       return res.status(400).json({ message: "client and date are required" });
     }
     if (new Date(date).getTime() < Date.now()) {
       return res.status(400).json({ message: "Appointment cannot be in the past" });
+    }
+    // Quick add: a patient who isn't registered here yet (typed in, or picked
+    // from the phone's contacts). Validated now, but only created once the slot
+    // checks below have passed, so a taken slot never leaves a stray account.
+    let quickAdd = null;
+    if (!client) {
+      quickAdd = await prepareQuickAdd(newClient, doctorId);
+      if (quickAdd.error) return res.status(quickAdd.status).json(quickAdd.error);
+      client = quickAdd.existing?._id;
+    } else if (!mongoose.isValidObjectId(client) || !(await isClinicPatient(doctorId, client))) {
+      // Any id used to be accepted here, including another clinic's patients.
+      return res.status(404).json({ message: "Patient not found at this clinic" });
     }
     // Type + length for this booking, so the overlap check below reserves the
     // right amount of the doctor's day (20 minutes vs 90).
@@ -465,11 +539,24 @@ router.post("/", async (req, res) => {
         code: "SLOT_TAKEN",
       });
     }
-    if (await patientDayConflict(client, date)) {
+    if (client && (await patientDayConflict(client, doctorId, date))) {
       return res.status(409).json({
         message: "This patient already has an appointment on this day.",
         code: "PATIENT_DAY_TAKEN",
       });
+    }
+    // Slot is free: now register (or link) the quick-add patient.
+    let created = null;
+    if (quickAdd) {
+      if (quickAdd.existing) {
+        if (!quickAdd.alreadyLinked) {
+          await linkPatient(quickAdd.existing._id, doctorId, "doctor");
+          await announceLink(doctorId, quickAdd.existing);
+        }
+      } else {
+        created = await createClinicPatient(doctorId, quickAdd.fields);
+        client = created.client._id;
+      }
     }
     const appt = await Appointment.create({
       doctor: doctorId,
@@ -506,8 +593,26 @@ router.post("/", async (req, res) => {
     const shareMessage = `Hi ${c.managed ? c.guardianName || "there" : c.name}, ${body}`;
     const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
 
-    res.status(201).json({ appointment: populated, shareMessage, whatsappUrl });
+    res.status(201).json({
+      appointment: populated,
+      shareMessage,
+      whatsappUrl,
+      // Present when the patient was registered by this booking.
+      newPatient: created ? { client: created.client, credentials: created.credentials } : undefined,
+      linkedPatient:
+        quickAdd?.existing && !quickAdd.alreadyLinked
+          ? { _id: quickAdd.existing._id, name: quickAdd.existing.name }
+          : undefined,
+    });
   } catch (err) {
+    // A duplicate phone/email on the quick-add patient (two staff adding the
+    // same person at once) is not a taken slot.
+    if (err?.code === 11000 && (err.keyPattern?.phone || err.keyPattern?.email)) {
+      return res.status(409).json({
+        message: "That phone or email was just registered. Search for the patient and book them instead.",
+        code: "CONTACT_IN_USE",
+      });
+    }
     if (err?.code === 11000) {
       return res.status(409).json({
         message: "That slot was just taken — please pick another time.",
@@ -532,11 +637,13 @@ router.post("/request", async (req, res) => {
     }
 
     // Booking for self, or for a linked dependent (req.body.for = dependent id).
+    // Which of the patient's doctors (body.doctorId); the primary when omitted.
     let patientId = req.user._id;
     let patientName = req.user.name;
-    let doctorId = req.user.doctor;
+    let doctorId = req.body.doctorId || null;
+    let dep = null;
     if (req.body.for && String(req.body.for) !== String(req.user._id)) {
-      const dep = await User.findOne({
+      dep = await User.findOne({
         _id: req.body.for,
         managed: true,
         guardian: req.user._id,
@@ -544,7 +651,16 @@ router.post("/request", async (req, res) => {
       if (!dep) return res.status(403).json({ message: "Not your dependent" });
       patientId = dep._id;
       patientName = dep.name;
-      doctorId = dep.doctor;
+    }
+    if (doctorId) {
+      if (!mongoose.isValidObjectId(doctorId)) return res.status(400).json({ message: "Invalid doctor" });
+      // The guardian's own doctors count for their child too.
+      const allowed =
+        (await isClinicPatient(doctorId, patientId)) ||
+        (dep && (await isClinicPatient(doctorId, req.user._id)));
+      if (!allowed) return res.status(403).json({ message: "You are not associated with this doctor." });
+    } else {
+      doctorId = dep ? dep.doctor || req.user.doctor : req.user.doctor;
     }
     if (!doctorId) {
       return res.status(400).json({ message: "You are not associated with a doctor yet." });
@@ -559,7 +675,7 @@ router.post("/request", async (req, res) => {
         code: "SLOT_TAKEN",
       });
     }
-    if (await patientDayConflict(patientId, date)) {
+    if (await patientDayConflict(patientId, doctorId, date)) {
       return res.status(409).json({
         message: `${patientName} already has an appointment on this day.`,
         code: "PATIENT_DAY_TAKEN",
@@ -572,6 +688,9 @@ router.post("/request", async (req, res) => {
     // decides whether a human still has to press Confirm.
     const doctor = await User.findById(doctorId).select("name email autoConfirmBookings");
     const autoConfirm = !!doctor?.autoConfirmBookings;
+
+    // A child booked with one of the guardian's doctors joins that clinic.
+    if (dep && !(await isClinicPatient(doctorId, dep._id))) await linkPatient(dep._id, doctorId, "client");
 
     const appt = await Appointment.create({
       doctor: doctorId,
@@ -650,7 +769,7 @@ router.patch("/:id/confirm", async (req, res) => {
         code: "SLOT_TAKEN",
       });
     }
-    if (await patientDayConflict(appt.client, appt.date, appt._id)) {
+    if (await patientDayConflict(appt.client, appt.doctor, appt.date, appt._id)) {
       return res.status(409).json({
         message: "This patient already has another appointment on this day.",
         code: "PATIENT_DAY_TAKEN",
@@ -780,7 +899,7 @@ router.put("/:id", async (req, res) => {
         code: "SLOT_TAKEN",
       });
     }
-    if (date && ACTIVE.includes(nextStatus) && (await patientDayConflict(current.client, date, current._id))) {
+    if (date && ACTIVE.includes(nextStatus) && (await patientDayConflict(current.client, doctorId, date, current._id))) {
       return res.status(409).json({
         message: "This patient already has an appointment on this day.",
         code: "PATIENT_DAY_TAKEN",
@@ -894,7 +1013,7 @@ router.patch("/:id/reschedule", async (req, res) => {
         code: "SLOT_TAKEN",
       });
     }
-    if (await patientDayConflict(req.user._id, date, appt._id)) {
+    if (await patientDayConflict(appt.client, appt.doctor, date, appt._id)) {
       return res.status(409).json({
         message: "You already have another appointment on this day.",
         code: "PATIENT_DAY_TAKEN",

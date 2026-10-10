@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import User from "../models/User.js";
-import Association from "../models/Association.js";
+import { patientDoctorIds, linkPatient } from "../utils/careTeam.js";
 import { protect, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -22,7 +22,10 @@ router.post("/", async (req, res) => {
   try {
     const { name, dateOfBirth } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Name is required." });
-    if (!req.user.doctor) {
+    // The child joins every doctor the guardian is with, so the guardian can
+    // book them with any of them (dentist, physio, eye specialist…).
+    const doctorIds = await patientDoctorIds(req.user);
+    if (!doctorIds.length) {
       return res.status(400).json({ message: "Associate with a doctor first to add a dependent." });
     }
     const dep = await User.create({
@@ -35,15 +38,9 @@ router.post("/", async (req, res) => {
       guardianEmail: req.user.email,
       dateOfBirth: dateOfBirth || undefined,
       password: crypto.randomBytes(24).toString("hex"), // no usable login
-      doctor: req.user.doctor,
+      doctor: doctorIds[0],
     });
-    await Association.create({
-      client: dep._id,
-      doctor: req.user.doctor,
-      status: "approved",
-      initiatedBy: "client",
-      respondedAt: new Date(),
-    });
+    for (const d of doctorIds) await linkPatient(dep._id, d, "client");
     res.status(201).json(dep);
   } catch (err) {
     console.error(err);

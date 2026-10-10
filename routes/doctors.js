@@ -5,6 +5,7 @@ import Review from "../models/Review.js";
 import Appointment from "../models/Appointment.js";
 import AppointmentType from "../models/AppointmentType.js";
 import { protect, requireRole } from "../middleware/auth.js";
+import { isClinicPatient } from "../utils/careTeam.js";
 
 const router = express.Router();
 
@@ -146,7 +147,7 @@ router.post("/:id/reviews", protect, requireRole("client"), async (req, res) => 
     if (!doctor) return res.status(404).json({ message: "Doctor not found" });
 
     // Only patients associated with this doctor (approved) may review them.
-    if (String(req.user.doctor || "") !== String(doctor._id)) {
+    if (!(await isClinicPatient(doctor._id, req.user._id))) {
       return res.status(403).json({
         message: "You can review this doctor only after they approve your association.",
       });

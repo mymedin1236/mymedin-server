@@ -7,6 +7,7 @@ import Review from "../models/Review.js";
 import { sendPush } from "../utils/push.js";
 import { notifyClinic } from "../utils/notify.js";
 import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
+import { isClinicPatient, linkPatient, unlinkPatient, patientDoctorIds } from "../utils/careTeam.js";
 
 const router = express.Router();
 router.use(protect, resolveClinic);
@@ -48,16 +49,19 @@ router.post("/request", requireRole("client"), async (req, res) => {
     const doctor = await User.findOne({ _id: doctorId, role: "doctor" });
     if (!doctor) return res.status(404).json({ message: "Doctor not found" });
 
+    // A patient may be with several doctors (dentist, physio, eye specialist…),
+    // so only a repeat request to the SAME doctor is refused.
     const me = await User.findById(req.user._id);
-    if (me.doctor) {
-      return res.status(409).json({ message: "You are already associated with a doctor. Disassociate first." });
+    if (await isClinicPatient(doctor._id, me._id)) {
+      return res.status(409).json({ message: "You are already associated with this doctor." });
     }
     const existingPending = await Association.findOne({
       client: me._id,
+      doctor: doctor._id,
       status: "pending",
     });
     if (existingPending) {
-      return res.status(409).json({ message: "You already have a pending request." });
+      return res.status(409).json({ message: "You already have a pending request with this doctor." });
     }
 
     const association = await Association.create({
@@ -100,10 +104,10 @@ router.post("/:id/approve", requireRole("doctor", "assistant"), async (req, res)
     });
     if (!association) return res.status(404).json({ message: "Request not found" });
 
+    // Approve without replacing the patient's other doctors; this becomes their
+    // primary only if they have none yet.
+    await linkPatient(association.client, doctorId, association.initiatedBy);
     association.status = "approved";
-    association.respondedAt = new Date();
-    await association.save();
-    await User.findByIdAndUpdate(association.client, { doctor: doctorId });
 
     await notify(
       association.client,
@@ -149,44 +153,56 @@ router.post("/:id/reject", requireRole("doctor", "assistant"), async (req, res) 
   }
 });
 
-// GET /api/associations/me  (client) -> current doctor + pending request
+// GET /api/associations/me  (client) -> all my doctors + pending requests.
+// `doctors` is the full list (primary first), each with my review of them.
+// `doctor` / `pending` / `myReview` mirror the primary doctor for older clients.
+const DOCTOR_CARD = "name clinicName specialization rating reviewCount availability image";
 router.get("/me", requireRole("client"), async (req, res) => {
-  const me = await User.findById(req.user._id).populate(
-    "doctor",
-    "name clinicName specialization rating reviewCount availability image"
+  const me = await User.findById(req.user._id);
+  const ids = await patientDoctorIds(me);
+  const [doctors, reviews, pendings] = await Promise.all([
+    User.find({ _id: { $in: ids }, role: "doctor" }).select(DOCTOR_CARD),
+    Review.find({ client: me._id, doctor: { $in: ids } }).select("doctor rating comment updatedAt"),
+    Association.find({ client: me._id, status: "pending" })
+      .populate("doctor", "name clinicName specialization")
+      .sort({ createdAt: -1 }),
+  ]);
+  const reviewFor = new Map(
+    reviews.map((r) => [
+      String(r.doctor),
+      { rating: r.rating, comment: r.comment || "", updatedAt: r.updatedAt },
+    ])
   );
-  const pending = await Association.findOne({ client: me._id, status: "pending" }).populate(
-    "doctor",
-    "name clinicName"
-  );
-  // The patient's own review of their current doctor (so the home screen shows
-  // "your review · edit" instead of re-prompting them to rate every visit).
-  let myReview = null;
-  if (me.doctor) {
-    const r = await Review.findOne({ doctor: me.doctor._id, client: me._id }).select(
-      "rating comment updatedAt"
-    );
-    if (r) myReview = { rating: r.rating, comment: r.comment || "", updatedAt: r.updatedAt };
-  }
-  res.json({ doctor: me.doctor || null, pending: pending || null, myReview });
+  const byId = new Map(doctors.map((d) => [String(d._id), d]));
+  const list = ids
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((d) => ({
+      ...d.toJSON(),
+      primary: String(d._id) === String(me.doctor || ""),
+      myReview: reviewFor.get(String(d._id)) || null,
+    }));
+  const primary = list[0] || null;
+  res.json({
+    doctors: list,
+    pendings,
+    doctor: primary,
+    pending: pendings[0] || null,
+    myReview: primary?.myReview || null,
+  });
 });
 
 // POST /api/associations/disassociate { rating, comment }  (client)
 router.post("/disassociate", requireRole("client"), async (req, res) => {
   try {
+    // Leave ONE doctor (body.doctorId; the primary when omitted). The patient's
+    // other doctors are untouched.
     const me = await User.findById(req.user._id);
-    if (!me.doctor) {
-      return res.status(409).json({ message: "You are not associated with a doctor." });
+    const doctorId = req.body.doctorId || me.doctor;
+    if (!doctorId || !mongoose.isValidObjectId(doctorId) || !(await isClinicPatient(doctorId, me._id))) {
+      return res.status(409).json({ message: "You are not associated with this doctor." });
     }
-    const doctorId = me.doctor;
-
-    // End the active association
-    await Association.findOneAndUpdate(
-      { client: me._id, doctor: doctorId, status: "approved" },
-      { status: "ended", endedAt: new Date() }
-    );
-    me.doctor = undefined;
-    await me.save();
+    await unlinkPatient(me._id, doctorId);
 
     // Capture rating/review on the way out (optional)
     const { rating, comment } = req.body;

@@ -25,7 +25,10 @@ const userSchema = new mongoose.Schema(
     // When the guardian is a registered patient, link to their account so they
     // can view/manage this dependent and receive its notifications in-app/push.
     guardian: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    // Link: a client may be created by / belong to a doctor
+    // Client: their PRIMARY doctor. A patient may be with several doctors — the
+    // approved Association rows are the full list (see utils/careTeam.js); this
+    // is just the default one, kept in sync by linkPatient/unlinkPatient.
+    // Assistant: set in-memory per request to the active clinic (resolveClinic).
     doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
     // When the patient was last reminded about an outstanding treatment balance,

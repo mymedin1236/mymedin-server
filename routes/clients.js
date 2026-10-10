@@ -5,6 +5,21 @@ import Association from "../models/Association.js";
 import { sendMail } from "../utils/mailer.js";
 import { sendWhatsApp } from "../utils/whatsapp.js";
 import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
+import {
+  clinicPatientIds,
+  findClinicPatient,
+  isClinicPatient,
+  linkPatient,
+  unlinkPatient,
+  patientDoctorIds,
+  withClinicNotes,
+  withClinicNotesMany,
+  setClinicNotes,
+  findExistingByContact,
+  existingPatientConflict,
+  announceLink,
+  createClinicPatient,
+} from "../utils/careTeam.js";
 
 const router = express.Router();
 
@@ -20,7 +35,7 @@ router.use(protect, requireRole("doctor", "assistant"), resolveClinic);
 // GET /api/clients  -> list clients associated with THIS clinic
 router.get("/", async (req, res) => {
   const { search, managed } = req.query;
-  const filter = { role: "client", doctor: clinicId(req.user) };
+  const filter = { role: "client", _id: { $in: await clinicPatientIds(clinicId(req.user)) } };
   // Split adult patients vs managed dependents (children) when requested.
   if (managed === "true") filter.managed = true;
   else if (managed === "false") filter.managed = { $ne: true };
@@ -34,7 +49,7 @@ router.get("/", async (req, res) => {
     ];
   }
   const clients = await User.find(filter).sort({ createdAt: -1 });
-  res.json(clients);
+  res.json(await withClinicNotesMany(clinicId(req.user), clients));
 });
 
 // POST /api/clients -> create a new client record (doctor creating on behalf of client)
@@ -109,77 +124,43 @@ router.post("/", async (req, res) => {
     if (!cleanEmail && !trimmedPhone) {
       return res.status(400).json({ message: "Provide an email or phone so the patient can sign in." });
     }
-    if (cleanEmail) {
-      const exists = await User.findOne({ email: cleanEmail });
-      if (exists) return res.status(409).json({ message: "Email already in use" });
-    }
-    if (trimmedPhone) {
-      const phoneExists = await User.findOne({ phone: trimmedPhone });
-      if (phoneExists) return res.status(409).json({ message: "Phone already in use" });
-    }
+    // The person may already be a patient elsewhere (a dentist adding someone
+    // the eye clinic already registered). Don't make a second account — tell
+    // staff who it is so they can add that patient to this clinic instead.
+    const existing = await findExistingByContact(cleanEmail, trimmedPhone);
+    if (existing) return res.status(409).json(await existingPatientConflict(existing, owningDoctorId));
 
-    const client = await User.create({
+    const { client, credentials, shareMessage } = await createClinicPatient(owningDoctorId, {
       name,
       email: cleanEmail,
-      password,
-      role: "client",
       phone: trimmedPhone,
+      password,
       dateOfBirth,
-      doctor: owningDoctorId,
     });
-
-    // Record the (already-approved) association created by the clinic
-    await Association.create({
-      client: client._id,
-      doctor: owningDoctorId,
-      status: "approved",
-      initiatedBy: "doctor",
-      respondedAt: new Date(),
-    });
-
-    // The credentials message should name the doctor, even if an assistant created the account.
-    const owner =
-      req.user.role === "assistant"
-        ? await User.findById(owningDoctorId).select("name")
-        : req.user;
-    const doctorName = owner?.name || req.user.name;
-
-    // Build shareable login credentials and email them to the client
-    const loginUrl =
-      (process.env.CLIENT_ORIGIN || "http://localhost:5173")
-        .split(",")[0]
-        .trim()
-        .replace(/\/+$/, "") + "/login";
-    const shareMessage =
-      `Hi ${name}, Dr. ${doctorName} created your MyMedin account.\n\n` +
-      `Login: ${loginUrl}\n` +
-      (cleanEmail ? `Email: ${cleanEmail}\n` : `Phone: ${trimmedPhone}\n`) +
-      `Password: ${password}\n\n` +
-      `Please sign in and change your password.`;
-
-    // Email the credentials only when we have an email address to send to.
-    if (cleanEmail) {
-      sendMail({
-        to: cleanEmail,
-        subject: "Your MyMedin account",
-        text: shareMessage,
-        html: shareMessage.replace(/\n/g, "<br/>"),
-      }).catch((e) => console.error("creds email failed:", e?.message));
-    }
-    // Most patients register with a phone and no email, so without this their
-    // login never reaches them and staff have to paste it by hand.
-    if (trimmedPhone) {
-      sendWhatsApp({ to: trimmedPhone, text: shareMessage }).catch((e) =>
-        console.error("creds whatsapp failed:", e?.message)
-      );
-    }
 
     // Return the client plus credentials so the doctor can copy / share via WhatsApp
-    res.status(201).json({
-      client,
-      credentials: { email: cleanEmail || "", phone: trimmedPhone || "", password },
-      shareMessage,
-    });
+    res.status(201).json({ client, credentials, shareMessage });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /api/clients/:id/link -> add a patient who is already registered with
+// another doctor to THIS clinic too. Their account, login and other doctors are
+// untouched; the patient is told which clinic added them.
+router.post("/:id/link", async (req, res) => {
+  try {
+    const doctorId = clinicId(req.user);
+    const client = await User.findOne({ _id: req.params.id, role: "client" });
+    if (!client) return res.status(404).json({ message: "Patient not found" });
+    if (await isClinicPatient(doctorId, client._id)) {
+      return res.json({ client: await withClinicNotes(doctorId, client), alreadyLinked: true });
+    }
+    await linkPatient(client._id, doctorId, "doctor");
+    await announceLink(doctorId, client);
+    const fresh = await User.findById(client._id);
+    res.status(201).json({ client: await withClinicNotes(doctorId, fresh) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -188,25 +169,23 @@ router.post("/", async (req, res) => {
 
 // GET /api/clients/:id
 router.get("/:id", async (req, res) => {
-  const client = await User.findOne({
-    _id: req.params.id,
-    role: "client",
-    doctor: clinicId(req.user),
-  });
+  const doctorId = clinicId(req.user);
+  const client = await findClinicPatient(doctorId, req.params.id);
   if (!client) return res.status(404).json({ message: "Client not found" });
-  res.json(client);
+  res.json(await withClinicNotes(doctorId, client));
 });
 
 // PUT /api/clients/:id
 router.put("/:id", async (req, res) => {
   try {
     const { name, phone, dateOfBirth, address, medicalNotes } = req.body;
-    const existing = await User.findOne({
-      _id: req.params.id,
-      role: "client",
-      doctor: clinicId(req.user),
-    });
+    const doctorId = clinicId(req.user);
+    const existing = await findClinicPatient(doctorId, req.params.id);
     if (!existing) return res.status(404).json({ message: "Client not found" });
+
+    // Notes are private to this clinic, so they go on its association, never
+    // on the User record the patient's other doctors share.
+    if (medicalNotes !== undefined) await setClinicNotes(doctorId, existing, medicalNotes);
 
     // Managed (child) patient: edit name/DOB + guardian contact, no own phone/login.
     if (existing.managed) {
@@ -222,7 +201,7 @@ router.put("/:id", async (req, res) => {
       if (req.body.guardianEmail !== undefined)
         existing.guardianEmail = req.body.guardianEmail?.trim().toLowerCase() || undefined;
       await existing.save();
-      return res.json(existing);
+      return res.json(await withClinicNotes(doctorId, existing));
     }
 
     const trimmedPhone = phone?.trim();
@@ -235,18 +214,14 @@ router.put("/:id", async (req, res) => {
     }
 
     // findOneAndUpdate bypasses the save hook, so clear empty phones explicitly
-    const update = { name, dateOfBirth, address, medicalNotes };
+    const update = { name, dateOfBirth, address };
     const ops = trimmedPhone
       ? { $set: { ...update, phone: trimmedPhone } }
       : { $set: update, $unset: { phone: "" } };
 
-    const client = await User.findOneAndUpdate(
-      { _id: req.params.id, role: "client", doctor: clinicId(req.user) },
-      ops,
-      { new: true }
-    );
+    const client = await User.findOneAndUpdate({ _id: existing._id, role: "client" }, ops, { new: true });
     if (!client) return res.status(404).json({ message: "Client not found" });
-    res.json(client);
+    res.json(await withClinicNotes(doctorId, client));
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -260,12 +235,19 @@ router.post("/:id/reset-password", async (req, res) => {
     if (!password || String(password).length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters" });
     }
-    const client = await User.findOne({
-      _id: req.params.id,
-      role: "client",
-      doctor: clinicId(req.user),
-    });
+    const doctorId = clinicId(req.user);
+    const client = await findClinicPatient(doctorId, req.params.id);
     if (!client) return res.status(404).json({ message: "Patient not found" });
+    // The login belongs to the patient, not to any one clinic. Once they're with
+    // other doctors too, one clinic must not be able to take over the account.
+    const doctors = await patientDoctorIds(client);
+    if (doctors.some((d) => d !== String(doctorId))) {
+      return res.status(403).json({
+        message:
+          "This patient is also with other doctors, so only they can change their password (via Forgot password).",
+        code: "SHARED_PATIENT",
+      });
+    }
 
     client.password = password; // hashed by the User pre-save hook
     await client.save();
@@ -309,14 +291,21 @@ router.post("/:id/reset-password", async (req, res) => {
 });
 
 // DELETE /api/clients/:id
+// Removes the patient from THIS clinic. The account itself is deleted only when
+// no other doctor still has them; otherwise their other clinics keep them.
 router.delete("/:id", async (req, res) => {
-  const client = await User.findOneAndDelete({
-    _id: req.params.id,
-    role: "client",
-    doctor: clinicId(req.user),
-  });
-  if (!client) return res.status(404).json({ message: "Client not found" });
-  res.json({ message: "Deleted" });
+  try {
+    const doctorId = clinicId(req.user);
+    const client = await findClinicPatient(doctorId, req.params.id);
+    if (!client) return res.status(404).json({ message: "Client not found" });
+    const stillWithOthers = await unlinkPatient(client._id, doctorId);
+    if (stillWithOthers) return res.json({ message: "Removed from this clinic", removed: true });
+    await User.deleteOne({ _id: client._id, role: "client" });
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 export default router;
