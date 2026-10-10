@@ -532,7 +532,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     const doctorId = clinicId(req.user);
     const [owner, appointmentTypes] = await Promise.all([
       User.findById(doctorId)
-        .select("clinicName availability slotDuration dayOverrides location")
+        .select("clinicName availability slotDuration autoConfirmBookings dayOverrides location")
         .lean(),
       AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
     ]);
