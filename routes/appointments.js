@@ -5,7 +5,16 @@ import AppointmentType from "../models/AppointmentType.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import Engagement from "../models/Engagement.js";
-import { slotsForDay, findSlotAt, DEFAULT_SLOT_MINUTES, addDays, closedRunAround } from "../utils/slots.js";
+import {
+  slotsForDay,
+  bracketsForDay,
+  findSlotAt,
+  overlaps,
+  DEFAULT_SLOT_MINUTES,
+  addDays,
+  closedRunAround,
+} from "../utils/slots.js";
+import Clinic from "../models/Clinic.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, resolveClinicSoft, clinicId } from "../middleware/auth.js";
@@ -615,6 +624,111 @@ router.post("/cancel-closed-days", async (req, res) => {
       });
     }
     res.json({ cancelled });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ---- When a day has no free slot: the doctor's next free day, and other ----
+// ---- doctors of the same specialty at the same clinic who are free.     ----
+
+// "17:00" style minutes -> "5:00 PM"
+const fmtMin12 = (m) => {
+  const h = Math.floor(m / 60);
+  return `${((h + 11) % 12) + 1}:${String(m % 60).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+};
+const dowOf = (dayStr) => {
+  const [y, m, d] = dayStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+};
+
+// Free, still-future slots per day for one doctor over [fromDay, fromDay+days),
+// as Map(day -> { free: [slot], hours: "5:00 PM – 7:00 PM" }). One query for
+// the bookings of the whole range.
+const freeSlotsByDay = async (doctorId, fromDay, days) => {
+  const schedule = await clinicSchedule(doctorId);
+  if (!schedule.exists) return new Map();
+  const booked = await Appointment.find({
+    doctor: doctorId,
+    status: { $in: ACTIVE },
+    date: {
+      $gte: new Date(clinicInstant(fromDay, 0).getTime() - MAX_APPOINTMENT_MINUTES * 60000),
+      $lt: clinicInstant(addDays(fromDay, days), 0),
+    },
+  })
+    .select("date duration")
+    .lean();
+  const ranges = booked.map((a) => {
+    const start = new Date(a.date).getTime();
+    return [start, start + (a.duration || schedule.defaultDuration) * 60000];
+  });
+  const now = Date.now();
+  const out = new Map();
+  for (let i = 0; i < days; i++) {
+    const day = addDays(fromDay, i);
+    const args = { availability: schedule.availability, dayOverrides: schedule.dayOverrides, dayStr: day, dow: dowOf(day) };
+    const free = slotsForDay({ ...args, types: schedule.types, defaultDuration: schedule.defaultDuration }).filter((sl) => {
+      const start = clinicInstant(day, sl.start).getTime();
+      const end = start + sl.duration * 60000;
+      return start > now && !ranges.some(([s, e]) => overlaps(start, end, s, e));
+    });
+    const hours = bracketsForDay(args)
+      .map((b) => `${fmtMin12(b.start)} – ${fmtMin12(b.end)}`)
+      .join(", ");
+    out.set(day, { free, hours });
+  }
+  return out;
+};
+
+const sameSpecialty = (a, b) => {
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  return !!norm(a) && norm(a) === norm(b);
+};
+
+// GET /api/appointments/alternatives?doctor=<id>&date=YYYY-MM-DD  (patient)
+// For a day on which the patient's doctor has no free slot: that doctor's next
+// day with a free slot (within 30 days), and the other doctors of the same
+// specialty at the same clinic who are free that day. Only doctors the patient
+// can book (is registered with) are offered.
+router.get("/alternatives", async (req, res) => {
+  try {
+    if (req.user.role !== "client") return res.status(403).json({ message: "Patients only" });
+    const { doctor, date } = req.query;
+    if (!mongoose.isValidObjectId(doctor) || !/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+      return res.status(400).json({ message: "doctor and date are required" });
+    }
+    if (!(await isClinicPatient(doctor, req.user._id))) {
+      return res.status(403).json({ message: "You are not associated with this doctor." });
+    }
+
+    const own = await freeSlotsByDay(doctor, addDays(date, 1), 30);
+    let nextAvailable = null;
+    for (const [day, v] of own) {
+      if (v.free.length) {
+        nextAvailable = { date: day, freeCount: v.free.length, hours: v.hours };
+        break;
+      }
+    }
+
+    const [me, clinic] = await Promise.all([
+      User.findById(doctor).select("specialization").lean(),
+      Clinic.findOne({ doctors: doctor }).populate("doctors", "name specialization").lean(),
+    ]);
+    const alternatives = [];
+    for (const d of clinic?.doctors || []) {
+      if (String(d._id) === String(doctor) || !sameSpecialty(d.specialization, me?.specialization)) continue;
+      if (!(await isClinicPatient(d._id, req.user._id))) continue;
+      const day = (await freeSlotsByDay(d._id, date, 1)).get(date);
+      if (!day?.free.length) continue;
+      alternatives.push({
+        doctor: { _id: d._id, name: d.name, specialization: d.specialization || "" },
+        freeCount: day.free.length,
+        firstFree: fmtMin12(day.free[0].start),
+        hours: day.hours,
+      });
+    }
+    res.json({ date, clinic: clinic ? { _id: clinic._id, name: clinic.name } : null, nextAvailable, alternatives });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });

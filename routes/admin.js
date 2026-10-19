@@ -3,6 +3,9 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import LoginEvent from "../models/LoginEvent.js";
 import Invoice from "../models/Invoice.js";
+import Clinic from "../models/Clinic.js";
+import mongoose from "mongoose";
+import { syncClinicPatients } from "../utils/careTeam.js";
 import { generateInvoicesOnce, DEFAULT_MONTHLY_FEE } from "../jobs/invoices.js";
 import { protect, requireRole } from "../middleware/auth.js";
 
@@ -279,6 +282,97 @@ router.patch("/invoices/:id", async (req, res) => {
     if (note !== undefined) inv.note = note;
     await inv.save();
     res.json(inv);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ---- Clinics: several doctors at one place ----
+// An admin groups doctors who sit at the same clinic. With sharePatients on,
+// every patient of any of them becomes a patient of all of them (existing
+// patients when the clinic is saved, new ones as they join).
+
+// Validate { name, doctors, sharePatients } from the admin form. Returns
+// { error } or { fields }.
+const clinicFields = async (body, exceptId) => {
+  const name = String(body?.name || "").trim();
+  if (!name) return { error: "Clinic name is required." };
+  const ids = [...new Set((Array.isArray(body?.doctors) ? body.doctors : []).map(String))];
+  if (ids.some((id) => !mongoose.isValidObjectId(id))) return { error: "Invalid doctor." };
+  const found = await User.find({ _id: { $in: ids }, role: "doctor" }).select("name").lean();
+  if (found.length !== ids.length) return { error: "Every member must be a doctor account." };
+  // A doctor sits at one clinic only.
+  const taken = await Clinic.findOne({ _id: { $ne: exceptId }, doctors: { $in: ids } })
+    .populate("doctors", "name")
+    .lean();
+  if (taken) {
+    const clash = taken.doctors.find((d) => ids.includes(String(d._id)));
+    return { error: `Dr. ${clash?.name || "This doctor"} is already in ${taken.name}.` };
+  }
+  return { fields: { name, doctors: ids, sharePatients: body?.sharePatients !== false } };
+};
+
+// GET /api/admin/clinic-groups -> clinics with their doctors, plus every doctor
+// (for the picker), each with the clinic they are in.
+router.get("/clinic-groups", async (req, res) => {
+  try {
+    const [clinics, doctors] = await Promise.all([
+      Clinic.find().sort({ name: 1 }).populate("doctors", "name clinicName specialization phone").lean(),
+      User.find({ role: "doctor" }).select("name clinicName specialization phone").sort({ name: 1 }).lean(),
+    ]);
+    const inClinic = new Map();
+    for (const c of clinics) for (const d of c.doctors) inClinic.set(String(d._id), String(c._id));
+    res.json({
+      clinics,
+      doctors: doctors.map((d) => ({ ...d, clinicId: inClinic.get(String(d._id)) || null })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /api/admin/clinic-groups { name, doctors: [id], sharePatients }
+router.post("/clinic-groups", async (req, res) => {
+  try {
+    const v = await clinicFields(req.body);
+    if (v.error) return res.status(400).json({ message: v.error });
+    const clinic = await Clinic.create(v.fields);
+    const linked = await syncClinicPatients(clinic._id);
+    res.status(201).json({ clinic, linked });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// PUT /api/admin/clinic-groups/:id { name, doctors, sharePatients }
+// Adding a doctor gives them all the clinic's existing patients. Removing one
+// leaves their current patients linked; they just stop receiving new ones.
+router.put("/clinic-groups/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Clinic not found" });
+    const v = await clinicFields(req.body, req.params.id);
+    if (v.error) return res.status(400).json({ message: v.error });
+    const clinic = await Clinic.findByIdAndUpdate(req.params.id, v.fields, { new: true });
+    if (!clinic) return res.status(404).json({ message: "Clinic not found" });
+    const linked = await syncClinicPatients(clinic._id);
+    res.json({ clinic, linked });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// DELETE /api/admin/clinic-groups/:id -> ungroup the doctors. Patients already
+// linked stay linked.
+router.delete("/clinic-groups/:id", async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: "Clinic not found" });
+    const gone = await Clinic.findByIdAndDelete(req.params.id);
+    if (!gone) return res.status(404).json({ message: "Clinic not found" });
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });

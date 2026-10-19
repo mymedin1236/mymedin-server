@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import Association from "../models/Association.js";
 import Notification from "../models/Notification.js";
 import Review from "../models/Review.js";
+import Clinic from "../models/Clinic.js";
 import { sendPush } from "../utils/push.js";
 import { notifyClinic } from "../utils/notify.js";
 import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
@@ -172,12 +173,15 @@ const DOCTOR_CARD = "name clinicName specialization rating reviewCount availabil
 router.get("/me", requireRole("client"), async (req, res) => {
   const me = await User.findById(req.user._id);
   const ids = await patientDoctorIds(me);
-  const [doctors, reviews, pendings] = await Promise.all([
+  const [doctors, reviews, pendings, clinics] = await Promise.all([
     User.find({ _id: { $in: ids }, role: "doctor" }).select(DOCTOR_CARD),
     Review.find({ client: me._id, doctor: { $in: ids } }).select("doctor rating comment updatedAt"),
     Association.find({ client: me._id, status: "pending" })
       .populate("doctor", "name clinicName specialization")
       .sort({ createdAt: -1 }),
+    // Clinics that share patients among the patient's doctors, so the app can
+    // say "You're registered with <clinic> (3 doctors)".
+    Clinic.find({ doctors: { $in: ids }, sharePatients: true }).select("name doctors").lean(),
   ]);
   const reviewFor = new Map(
     reviews.map((r) => [
@@ -197,6 +201,12 @@ router.get("/me", requireRole("client"), async (req, res) => {
   const primary = list[0] || null;
   res.json({
     doctors: list,
+    clinics: clinics.map((c) => ({
+      _id: c._id,
+      name: c.name,
+      doctorCount: c.doctors.length,
+      doctors: c.doctors.map(String).filter((d) => ids.includes(d)),
+    })),
     pendings,
     doctor: primary,
     pending: pendings[0] || null,

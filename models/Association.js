@@ -11,7 +11,10 @@ const associationSchema = new mongoose.Schema(
       enum: ["pending", "approved", "rejected", "ended"],
       default: "pending",
     },
-    initiatedBy: { type: String, enum: ["client", "doctor"], required: true },
+    // "clinic": linked automatically because the patient joined another doctor
+    // at the same clinic (see Clinic.sharePatients); `viaClinic` names it.
+    initiatedBy: { type: String, enum: ["client", "doctor", "clinic"], required: true },
+    viaClinic: { type: mongoose.Schema.Types.ObjectId, ref: "Clinic" },
     respondedAt: { type: Date },
     endedAt: { type: Date },
     // This clinic's private notes on the patient. A patient may be with several

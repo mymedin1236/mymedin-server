@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import User from "../models/User.js";
 import Association from "../models/Association.js";
+import Clinic from "../models/Clinic.js";
 import { notifyPatient } from "./notify.js";
 import { sendMail } from "./mailer.js";
 import { sendWhatsApp } from "./whatsapp.js";
@@ -54,16 +55,98 @@ export const patientDoctorIds = async (client) => {
   return [...new Set(ids)];
 };
 
-// Approve a patient at a clinic: create (or revive) the association and make
-// it the primary doctor if the patient has none. Returns the association.
-export const linkPatient = async (clientId, doctorId, initiatedBy = "doctor") => {
+// Approve a patient with ONE doctor: create (or revive) the association and
+// make it the primary doctor if the patient has none. Returns the association.
+const linkOne = async (clientId, doctorId, initiatedBy, viaClinic) => {
   const assoc = await Association.findOneAndUpdate(
     { client: clientId, doctor: doctorId, status: { $in: ["approved", "pending"] } },
-    { $set: { status: "approved", respondedAt: new Date() }, $setOnInsert: { initiatedBy } },
+    {
+      $set: { status: "approved", respondedAt: new Date() },
+      $setOnInsert: { initiatedBy, ...(viaClinic ? { viaClinic } : {}) },
+    },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
   // `doctor: null` matches both a missing and a null field.
   await User.updateOne({ _id: clientId, doctor: null }, { doctor: doctorId });
+  return assoc;
+};
+
+// ---- Clinics that share patients ----
+// Several doctors can sit at one clinic (models/Clinic.js). When the clinic
+// shares patients, joining any of its doctors registers the patient with all of
+// them. Each doctor still keeps their own notes and treatment history.
+
+// The patient-sharing clinic this doctor sits at, if any.
+export const sharingClinicOf = (doctorId) =>
+  Clinic.findOne({ doctors: doctorId, sharePatients: true }).lean();
+
+// Register a patient with one more doctor of their clinic. Skipped when they're
+// already linked, when the patient left this doctor, or when the doctor turned
+// them down: neither should be undone automatically. True if a link was made.
+const linkClinicDoctor = async (clientId, doctorId, clinicId) => {
+  if (await isClinicPatient(doctorId, clientId)) return false;
+  if (await Association.exists({ client: clientId, doctor: doctorId, status: { $in: ["ended", "rejected"] } })) {
+    return false;
+  }
+  await linkOne(clientId, doctorId, "clinic", clinicId);
+  return true;
+};
+
+// After a patient joins `doctorId`, register them with the clinic's other
+// doctors. Returns { clinic, linked: [doctorId] }.
+export const shareWithClinic = async (clientId, doctorId) => {
+  const clinic = await sharingClinicOf(doctorId);
+  if (!clinic) return { clinic: null, linked: [] };
+  const linked = [];
+  for (const d of clinic.doctors) {
+    if (String(d) === String(doctorId)) continue;
+    if (await linkClinicDoctor(clientId, d, clinic._id)) linked.push(d);
+  }
+  return { clinic, linked };
+};
+
+// Make every patient of every doctor at the clinic a patient of all of them.
+// Run when an admin creates a clinic, adds a doctor, or turns sharing on.
+// Silent: no notifications. Returns the number of new links.
+export const syncClinicPatients = async (clinicId) => {
+  const clinic = await Clinic.findById(clinicId).lean();
+  if (!clinic?.sharePatients || clinic.doctors.length < 2) return 0;
+  const patients = new Set();
+  for (const d of clinic.doctors) for (const p of await clinicPatientIds(d)) patients.add(String(p));
+  let count = 0;
+  for (const p of patients) {
+    for (const d of clinic.doctors) if (await linkClinicDoctor(p, d, clinic._id)) count++;
+  }
+  return count;
+};
+
+// Tell the patient (or their guardian) which other doctors they now have.
+const announceClinicLinks = async (clientId, { clinic, linked }) => {
+  if (!clinic || !linked.length) return;
+  const docs = await User.find({ _id: { $in: linked } }).select("name").lean();
+  const names = docs.map((d) => `Dr. ${d.name}`).join(", ");
+  const total = clinic.doctors.length;
+  await notifyPatient(clientId, {
+    type: "association_approved",
+    title: `Registered with ${clinic.name}`,
+    body:
+      `You're now registered with all ${total} doctors at ${clinic.name}, so you can book with ${names} too. ` +
+      `Each doctor keeps their own notes and treatment history.`,
+    url: "/client",
+  });
+};
+
+// Approve a patient at a clinic: link them to this doctor and, if the doctor
+// sits at a clinic that shares patients, to the clinic's other doctors too.
+// Returns this doctor's association.
+export const linkPatient = async (clientId, doctorId, initiatedBy = "doctor") => {
+  const assoc = await linkOne(clientId, doctorId, initiatedBy);
+  try {
+    await announceClinicLinks(clientId, await shareWithClinic(clientId, doctorId));
+  } catch (e) {
+    // The link the caller asked for stands even if sharing fails.
+    console.error("[clinic share]", e?.message);
+  }
   return assoc;
 };
 
@@ -194,6 +277,9 @@ export const createClinicPatient = async (doctorId, { name, email, phone, passwo
     initiatedBy: "doctor",
     respondedAt: new Date(),
   });
+  // A brand-new patient at a shared clinic is everyone's patient there. No
+  // separate message: they are about to get their login details anyway.
+  await shareWithClinic(client._id, doctorId).catch((e) => console.error("[clinic share]", e?.message));
 
   // The credentials message names the doctor, even if an assistant created it.
   const owner = await User.findById(doctorId).select("name");

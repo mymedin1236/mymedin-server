@@ -19,6 +19,7 @@ import {
   existingPatientConflict,
   announceLink,
   createClinicPatient,
+  shareWithClinic,
 } from "../utils/careTeam.js";
 
 const router = express.Router();
@@ -87,6 +88,8 @@ router.post("/", async (req, res) => {
         initiatedBy: "doctor",
         respondedAt: new Date(),
       });
+      // At a clinic that shares patients, the child is every doctor's patient there.
+      await shareWithClinic(child._id, owningDoctorId).catch((e) => console.error("[clinic share]", e?.message));
 
       const dName = await doctorNameFor(req.user, owningDoctorId);
       const shareMessage =
