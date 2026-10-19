@@ -168,7 +168,7 @@ router.post("/:id/reject", requireRole("doctor", "assistant"), async (req, res) 
 // GET /api/associations/me  (client) -> all my doctors + pending requests.
 // `doctors` is the full list (primary first), each with my review of them.
 // `doctor` / `pending` / `myReview` mirror the primary doctor for older clients.
-const DOCTOR_CARD = "name clinicName specialization rating reviewCount availability image";
+const DOCTOR_CARD = "name clinicName specialization rating reviewCount availability dayOverrides image";
 router.get("/me", requireRole("client"), async (req, res) => {
   const me = await User.findById(req.user._id);
   const ids = await patientDoctorIds(me);

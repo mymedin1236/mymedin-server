@@ -613,7 +613,10 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       owner.dayOverrides = b.dayOverrides
         .filter((o) => o && /^\d{4}-\d{2}-\d{2}$/.test(o.date) && o.date >= todayStr)
         .map((o) => {
-          if (o.closed) return { date: o.date, closed: true, blocks: [] };
+          if (o.closed) {
+            const reason = String(o.reason || "").trim().slice(0, 80);
+            return { date: o.date, closed: true, blocks: [], ...(reason ? { reason } : {}) };
+          }
           // Prefer the typed `blocks` array; accept the legacy single window so
           // an older client (or an override saved before types) still saves.
           const raw = Array.isArray(o.blocks) && o.blocks.length ? o.blocks : [o];
@@ -626,7 +629,8 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
             }));
           return { date: o.date, closed: false, blocks };
         })
-        .filter((o) => o.closed || o.blocks.length);
+        .filter((o) => o.closed || o.blocks.length)
+        .slice(0, 500); // a year of leave fits; this only stops a runaway list
     }
     if (
       b.latitude != null &&

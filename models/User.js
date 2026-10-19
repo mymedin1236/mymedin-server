@@ -98,6 +98,8 @@ const userSchema = new mongoose.Schema(
         _id: false,
         date: { type: String }, // YYYY-MM-DD
         closed: { type: Boolean, default: false },
+        // Optional note on a day off, e.g. "Annual leave", shown to patients.
+        reason: { type: String },
         start: { type: String },
         end: { type: String },
         blocks: [

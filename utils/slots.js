@@ -165,3 +165,39 @@ export function findSlotAt(slots, minutes, typeId) {
   if (typeId) return at.find((s) => String(s.typeId) === String(typeId)) || null;
   return at[0];
 }
+
+// ---- Days off and leave ----
+
+// "YYYY-MM-DD" shifted by `n` calendar days.
+export const addDays = (dayStr, n) => {
+  const [y, m, d] = dayStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+};
+
+// The day-off override for `dayStr`, if the doctor marked that date closed.
+export const closedOverrideOn = (dayOverrides, dayStr) =>
+  (dayOverrides || []).find((o) => o && o.date === dayStr && o.closed) || null;
+
+// The run of consecutive closed dates containing `dayStr` — a leave is saved as
+// one closed override per date. Returns { from, to, reason } or null.
+export function closedRunAround(dayOverrides, dayStr) {
+  const hit = closedOverrideOn(dayOverrides, dayStr);
+  if (!hit) return null;
+  let from = dayStr;
+  let to = dayStr;
+  while (closedOverrideOn(dayOverrides, addDays(from, -1))) from = addDays(from, -1);
+  while (closedOverrideOn(dayOverrides, addDays(to, 1))) to = addDays(to, 1);
+  return { from, to, reason: hit.reason || "" };
+}
+
+// The first day after `dayStr` on which the clinic has opening hours (it may
+// still be fully booked), looking at most `limit` days ahead; null if none.
+export function nextOpenDay({ availability, dayOverrides, dayStr, limit = 120 }) {
+  for (let i = 1; i <= limit; i++) {
+    const d = addDays(dayStr, i);
+    const [y, m, dd] = d.split("-").map(Number);
+    const dow = new Date(Date.UTC(y, m - 1, dd)).getUTCDay();
+    if (bracketsForDay({ availability, dayOverrides, dayStr: d, dow }).length) return d;
+  }
+  return null;
+}

@@ -5,7 +5,7 @@ import AppointmentType from "../models/AppointmentType.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import Engagement from "../models/Engagement.js";
-import { slotsForDay, findSlotAt, DEFAULT_SLOT_MINUTES } from "../utils/slots.js";
+import { slotsForDay, findSlotAt, DEFAULT_SLOT_MINUTES, addDays, closedRunAround } from "../utils/slots.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, resolveClinicSoft, clinicId } from "../middleware/auth.js";
@@ -282,7 +282,10 @@ const resolveSlot = async (doctorId, date, wantedTypeId) => {
     defaultDuration: schedule.defaultDuration,
   });
 
-  if (!slots || slots.length === 0) return { error: "The clinic is closed on this day." };
+  if (!slots || slots.length === 0) {
+    const run = closedRunAround(schedule.dayOverrides, dayStr);
+    return { error: run ? `${leaveText(run)}. Please pick another day.` : "The clinic is closed on this day." };
+  }
 
   const slot = findSlotAt(slots, minutes, wantedTypeId);
   if (!slot) {
@@ -294,6 +297,57 @@ const resolveSlot = async (doctorId, date, wantedTypeId) => {
     };
   }
   return { slot };
+};
+
+// "Mon 2 Nov" for a clinic day string.
+const fmtDay = (dayStr) =>
+  new Date(`${dayStr}T12:00:00Z`).toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+
+// "The doctor is on leave from Mon 2 Nov to Mon 16 Nov (Annual leave)".
+const leaveText = (run) =>
+  (run.from === run.to
+    ? `The doctor is not available on ${fmtDay(run.from)}`
+    : `The doctor is on leave from ${fmtDay(run.from)} to ${fmtDay(run.to)}`) +
+  (run.reason ? ` (${run.reason})` : "");
+
+// Staff may book off-grid, but never onto a day the doctor marked off: that
+// patient would turn up to a closed clinic. Returns a 409 body, or null.
+const closedDayBlock = async (doctorId, date) => {
+  const owner = await User.findById(doctorId).select("dayOverrides").lean();
+  const run = closedRunAround(owner?.dayOverrides, clinicPartsOf(date).dayStr);
+  if (!run) return null;
+  return {
+    message: `${leaveText(run)}. To book on this day, remove the day off in Settings first.`,
+    code: "CLINIC_CLOSED",
+  };
+};
+
+// Active appointments that fall on a future day the doctor marked off (a leave
+// added after patients had already booked), soonest first.
+const closedDayAppointments = async (doctorId) => {
+  const owner = await User.findById(doctorId).select("dayOverrides").lean();
+  const today = clinicPartsOf(new Date()).dayStr;
+  const closed = [
+    ...new Set((owner?.dayOverrides || []).filter((o) => o?.closed && o.date >= today).map((o) => o.date)),
+  ].sort();
+  if (!closed.length) return { appointments: [], dayOverrides: owner?.dayOverrides || [] };
+  const appts = await Appointment.find({
+    doctor: doctorId,
+    status: { $in: ACTIVE },
+    date: { $gte: clinicInstant(closed[0], 0), $lt: clinicInstant(addDays(closed[closed.length - 1], 1), 0) },
+  })
+    .populate("client", "name phone email managed guardian guardianName guardianEmail guardianPhone")
+    .sort({ date: 1 });
+  const set = new Set(closed);
+  return {
+    appointments: appts.filter((a) => set.has(clinicPartsOf(a.date).dayStr)),
+    dayOverrides: owner.dayOverrides,
+  };
 };
 
 // The type + duration to stamp on a booking clinic STAFF are creating.
@@ -495,6 +549,78 @@ router.get("/booked", async (req, res) => {
   }
 });
 
+// GET /api/appointments/closed-day-conflicts  (staff)
+// Bookings still standing on days the doctor has since marked off, so Settings
+// can warn about them right after a leave is added.
+router.get("/closed-day-conflicts", async (req, res) => {
+  try {
+    if (!isStaff(req.user)) return res.status(403).json({ message: "Clinic staff only" });
+    const { appointments } = await closedDayAppointments(clinicId(req.user));
+    res.json({
+      appointments: appointments.map((a) => ({
+        _id: a._id,
+        date: a.date,
+        status: a.status,
+        typeName: a.typeName || "",
+        reason: a.reason || "",
+        client: { _id: a.client?._id, name: a.client?.name || "Patient", phone: a.client?.phone || "" },
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST /api/appointments/cancel-closed-days { ids? }  (staff)
+// Cancels bookings on days the doctor marked off (all of them, or just `ids`)
+// and tells each patient why, on WhatsApp, email and in the app.
+router.post("/cancel-closed-days", async (req, res) => {
+  try {
+    if (!isStaff(req.user)) return res.status(403).json({ message: "Clinic staff only" });
+    const doctorId = clinicId(req.user);
+    const only = Array.isArray(req.body?.ids) ? new Set(req.body.ids.map(String)) : null;
+    const { appointments, dayOverrides } = await closedDayAppointments(doctorId);
+    const dName = await doctorNameFor(req.user);
+
+    let cancelled = 0;
+    for (const a of appointments) {
+      if (only && !only.has(String(a._id))) continue;
+      const done = await Appointment.findOneAndUpdate(
+        { _id: a._id, doctor: doctorId, status: { $in: ACTIVE } },
+        { $set: { status: "cancelled" }, $inc: { __v: 1 } }
+      );
+      if (!done) continue; // changed meanwhile
+      cancelled++;
+
+      const c = a.client;
+      if (!c) continue;
+      const run = closedRunAround(dayOverrides, clinicPartsOf(a.date).dayStr);
+      const away =
+        run && run.from !== run.to
+          ? `on leave from ${fmtDay(run.from)} to ${fmtDay(run.to)}`
+          : `not available on ${fmtDay(clinicPartsOf(a.date).dayStr)}`;
+      const whose = c.managed ? `${c.name}'s` : "your";
+      const t = clientNotifyTarget(c);
+      await notifyUser(t.userId, {
+        type: "appointment_cancelled",
+        title: "Appointment cancelled",
+        body:
+          `Dr. ${dName} is ${away}${run?.reason ? ` (${run.reason})` : ""}, so ${whose} appointment` +
+          `${a.status === "pending" ? " request" : ""} for ${fmtWhen(a.date)} has been cancelled. ` +
+          `Please book another time in the MyMedin app.`,
+        url: "/client",
+        email: t.email,
+        whatsapp: t.whatsapp,
+      });
+    }
+    res.json({ cancelled });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // Normalise a phone typed in or read from the address book to the 11-digit
 // local form the app uses: "+92 300-1234567" / "0092..." / "300..." -> "03001234567".
 const normalisePhone = (raw) => {
@@ -549,6 +675,8 @@ router.post("/", async (req, res) => {
     if (new Date(date).getTime() < Date.now()) {
       return res.status(400).json({ message: "Appointment cannot be in the past" });
     }
+    const closedDay = await closedDayBlock(doctorId, date);
+    if (closedDay) return res.status(409).json(closedDay);
     // Quick add: a patient who isn't registered here yet (typed in, or picked
     // from the phone's contacts). Validated now, but only created once the slot
     // checks below have passed, so a taken slot never leaves a stray account.
@@ -931,6 +1059,11 @@ router.put("/:id", async (req, res) => {
           )
         : null;
     const nextDuration = retype ? retype.duration : current.duration;
+
+    if (movingDate && ACTIVE.includes(nextStatus)) {
+      const closedDay = await closedDayBlock(doctorId, date);
+      if (closedDay) return res.status(409).json(closedDay);
+    }
 
     if (date && nextStatus === "scheduled" && (await slotConflict(doctorId, date, nextDuration, current._id))) {
       return res.status(409).json({
