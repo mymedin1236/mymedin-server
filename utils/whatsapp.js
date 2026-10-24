@@ -25,10 +25,13 @@ console.log(
 // Sign-off appended to every formatted WhatsApp/email message.
 export const SIGNATURE = "Powered by\n*Mymedin.com* - bookings and clinic management made easy";
 
-// The clinic assistant's number (doctor.assistantPhone, set in Settings) as a
-// message line, or "" when the clinic hasn't added one.
-export const assistantLine = (doctor) =>
-  doctor?.assistantPhone ? `📞 *Assistant to doctor:* ${doctor.assistantPhone}` : "";
+// The clinic assistant's name and number (doctor.assistantName/assistantPhone,
+// from Settings) as a message line, or "" when the clinic has no number set.
+export const assistantLine = (doctor) => {
+  if (!doctor?.assistantPhone) return "";
+  const name = String(doctor.assistantName || "").trim();
+  return `📞 *Assistant to doctor:* ${name ? `${name}, ` : ""}${doctor.assistantPhone}`;
+};
 
 // Add the assistant line to a patient-facing message: just above the "Powered
 // by" signature when there is one, otherwise at the end. Unchanged if no number.

@@ -532,7 +532,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     const doctorId = clinicId(req.user);
     const [owner, appointmentTypes] = await Promise.all([
       User.findById(doctorId)
-        .select("clinicName availability slotDuration autoConfirmBookings autoApproveAssociations assistantPhone dayOverrides location")
+        .select("clinicName availability slotDuration autoConfirmBookings autoApproveAssociations assistantPhone assistantName dayOverrides location")
         .lean(),
       AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
     ]);
@@ -544,6 +544,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       autoConfirmBookings: !!owner.autoConfirmBookings,
       autoApproveAssociations: !!owner.autoApproveAssociations,
       assistantPhone: owner.assistantPhone || "",
+      assistantName: owner.assistantName || "",
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,
@@ -614,6 +615,9 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       }
       owner.assistantPhone = phone;
     }
+    if (b.assistantName !== undefined) {
+      owner.assistantName = String(b.assistantName || "").trim().slice(0, 60);
+    }
     if (Array.isArray(b.dayOverrides)) {
       // Keep only well-formed, current-or-future entries so the list can't grow
       // unbounded with stale past exceptions.
@@ -664,6 +668,7 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       autoConfirmBookings: !!owner.autoConfirmBookings,
       autoApproveAssociations: !!owner.autoApproveAssociations,
       assistantPhone: owner.assistantPhone || "",
+      assistantName: owner.assistantName || "",
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,

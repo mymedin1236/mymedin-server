@@ -86,6 +86,9 @@ const userSchema = new mongoose.Schema(
     // The clinic assistant's phone, set in Settings. When present it's added to
     // every WhatsApp message the clinic sends a patient ("Assistant to doctor").
     assistantPhone: { type: String, trim: true, default: "" },
+    // That assistant's name, shown before the number. Filled in automatically
+    // when an assistant joins (utils/clinicContact.js), or typed in Settings.
+    assistantName: { type: String, trim: true, default: "" },
     // Default slot length in minutes, used by any bracket that names no type.
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },

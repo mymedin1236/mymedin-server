@@ -479,7 +479,7 @@ const notifyUser = async (userId, { type, title, body, url, email, whatsapp, dat
     );
   }
   if (whatsapp?.to) {
-    const dr = clinic ? await User.findById(clinic).select("assistantPhone").lean().catch(() => null) : null;
+    const dr = clinic ? await User.findById(clinic).select("assistantPhone assistantName").lean().catch(() => null) : null;
     sendWhatsApp({ to: whatsapp.to, text: withAssistant(`${whatsapp.greeting || ""}${body}`, dr) }).catch((e) =>
       console.error("whatsapp failed:", e?.message)
     );

@@ -41,7 +41,7 @@ export async function runBalanceRemindersOnce() {
       continue;
     }
 
-    const doctor = row.doctor ? await User.findById(row.doctor).select("name assistantPhone") : null;
+    const doctor = row.doctor ? await User.findById(row.doctor).select("name assistantPhone assistantName") : null;
     const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const whose = client.managed ? `${client.name}'s` : "your";
     const title = "Outstanding balance";

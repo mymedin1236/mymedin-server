@@ -80,7 +80,7 @@ export async function notifyPatient(clientOrId, { type, title, body, url, whatsa
   // is the guardian's number, matching how the email is routed above.
   const phone = c.managed ? c.guardianPhone : c.phone;
   if (phone) {
-    const dr = clinic ? await User.findById(clinic).select("assistantPhone").lean().catch(() => null) : null;
+    const dr = clinic ? await User.findById(clinic).select("assistantPhone assistantName").lean().catch(() => null) : null;
     const waText = withAssistant(typeof whatsapp === "function" ? whatsapp(greet) : text, dr);
     sendWhatsApp({ to: phone, text: waText }).catch((e) =>
       console.error("[notifyPatient] whatsapp:", e?.message)

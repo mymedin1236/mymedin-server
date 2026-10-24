@@ -153,7 +153,7 @@ export async function runRemindersOnce() {
     [LAST.flag]: { $ne: true },
   })
     .populate("client", "name email phone managed guardian guardianName guardianEmail guardianPhone")
-    .populate("doctor", "name clinicName address area city location assistantPhone");
+    .populate("doctor", "name clinicName address area city location assistantPhone assistantName");
 
   let sent = 0;
   for (const appt of due) {

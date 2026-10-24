@@ -33,7 +33,7 @@ router.post("/:id/accept", async (req, res) => {
   engagement.status = "active";
   engagement.startedAt = new Date();
   await engagement.save();
-  // First assistant in → their number becomes the clinic's "Assistant to doctor".
+  // First assistant in → their name and number become the clinic's "Assistant to doctor".
   await fillAssistantPhone(engagement.doctor, req.user).catch((e) =>
     console.error("[assistant phone] fill:", e?.message)
   );

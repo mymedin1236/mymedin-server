@@ -106,7 +106,7 @@ router.post("/", async (req, res) => {
       // A guardian usually has a phone but no email, so WhatsApp is the only
       // channel that actually reaches most of them.
       if (gPhone) {
-        const owner = await User.findById(owningDoctorId).select("assistantPhone").lean().catch(() => null);
+        const owner = await User.findById(owningDoctorId).select("assistantPhone assistantName").lean().catch(() => null);
         sendWhatsApp({ to: gPhone, text: withAssistant(shareMessage, owner) }).catch((e) =>
           console.error("guardian whatsapp failed:", e?.message)
         );
@@ -279,7 +279,7 @@ router.post("/:id/reset-password", async (req, res) => {
       }).catch((e) => console.error("reset email failed:", e?.message));
     }
     if (client.phone) {
-      const owner = await User.findById(clinicId(req.user)).select("assistantPhone").lean().catch(() => null);
+      const owner = await User.findById(clinicId(req.user)).select("assistantPhone assistantName").lean().catch(() => null);
       sendWhatsApp({ to: client.phone, text: withAssistant(shareMessage, owner) }).catch((e) =>
         console.error("reset whatsapp failed:", e?.message)
       );

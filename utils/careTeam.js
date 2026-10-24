@@ -288,7 +288,7 @@ export const createClinicPatient = async (doctorId, { name, email, phone, passwo
   await shareWithClinic(client._id, doctorId).catch((e) => console.error("[clinic share]", e?.message));
 
   // The credentials message names the doctor, even if an assistant created it.
-  const owner = await User.findById(doctorId).select("name assistantPhone");
+  const owner = await User.findById(doctorId).select("name assistantPhone assistantName");
   const shareMessage =
     `Hi ${name}, Dr. ${owner?.name || ""} created your MyMedin account.\n\n` +
     `Login: ${loginUrl()}\n` +

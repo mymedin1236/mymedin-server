@@ -50,7 +50,7 @@ function paymentWhatsAppText({ greet, heading, rows, footer }) {
 async function notifyPaymentReceived(tr, amount, actor, method) {
   try {
     if (!amount || amount <= 0) return;
-    const doctor = await User.findById(tr.doctor).select("name phone assistantPhone").catch(() => null);
+    const doctor = await User.findById(tr.doctor).select("name phone assistantPhone assistantName").catch(() => null);
     const patient = await User.findById(tr.client)
       .select("name email phone managed guardian guardianName guardianEmail guardianPhone")
       .catch(() => null);
@@ -209,7 +209,7 @@ async function loadInvoice(req, { pdf: withPdf = true } = {}) {
   const treatments = await Treatment.find(filter).sort({ date: 1 });
   if (!treatments.length) return null;
   const doctor = await User.findById(doctorId).select(
-    "name email phone address clinicName specialization city area assistantPhone"
+    "name email phone address clinicName specialization city area assistantPhone assistantName"
   );
   const issuedAt = new Date();
   const number = invoiceNumber(client, req.query.treatment, issuedAt);
