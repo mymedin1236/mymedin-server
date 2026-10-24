@@ -1,6 +1,7 @@
 import express from "express";
 import Engagement from "../models/Engagement.js";
 import { notifyUser } from "../utils/notify.js";
+import { fillAssistantPhone, releaseAssistantPhone } from "../utils/clinicContact.js";
 import { protect, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -32,6 +33,10 @@ router.post("/:id/accept", async (req, res) => {
   engagement.status = "active";
   engagement.startedAt = new Date();
   await engagement.save();
+  // First assistant in → their number becomes the clinic's "Assistant to doctor".
+  await fillAssistantPhone(engagement.doctor, req.user).catch((e) =>
+    console.error("[assistant phone] fill:", e?.message)
+  );
 
   await notifyUser(engagement.doctor, {
     type: "engagement_accepted",
@@ -62,6 +67,9 @@ router.post("/:id/end", async (req, res) => {
     { new: true }
   );
   if (!engagement) return res.status(404).json({ message: "Not an active engagement" });
+  await releaseAssistantPhone(engagement.doctor, req.user._id).catch((e) =>
+    console.error("[assistant phone] release:", e?.message)
+  );
 
   await notifyUser(engagement.doctor, {
     type: "engagement_left",

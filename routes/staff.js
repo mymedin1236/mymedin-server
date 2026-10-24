@@ -2,6 +2,7 @@ import express from "express";
 import User from "../models/User.js";
 import Engagement from "../models/Engagement.js";
 import { notifyUser } from "../utils/notify.js";
+import { releaseAssistantPhone } from "../utils/clinicContact.js";
 import { protect, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -97,6 +98,9 @@ router.delete("/:id", async (req, res) => {
     { new: true }
   );
   if (!engagement) return res.status(404).json({ message: "Not an active member of your clinic" });
+  await releaseAssistantPhone(req.user._id, engagement.assistant).catch((e) =>
+    console.error("[assistant phone] release:", e?.message)
+  );
 
   await notifyUser(engagement.assistant, {
     type: "engagement_ended",
