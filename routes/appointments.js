@@ -19,7 +19,7 @@ import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
 import { protect, resolveClinic, resolveClinicSoft, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
-import { sendWhatsApp } from "../utils/whatsapp.js";
+import { sendWhatsApp, withAssistant } from "../utils/whatsapp.js";
 import {
   isClinicPatient,
   linkPatient,
@@ -460,7 +460,8 @@ const clientNotifyTarget = (c) => {
   };
 };
 
-const notifyUser = async (userId, { type, title, body, url, email, whatsapp, data }) => {
+// `clinic` (the doctor's id) adds that clinic's assistant number to the WhatsApp.
+const notifyUser = async (userId, { type, title, body, url, email, whatsapp, data, clinic }) => {
   if (userId) {
     let ack;
     try {
@@ -478,7 +479,8 @@ const notifyUser = async (userId, { type, title, body, url, email, whatsapp, dat
     );
   }
   if (whatsapp?.to) {
-    sendWhatsApp({ to: whatsapp.to, text: `${whatsapp.greeting || ""}${body}` }).catch((e) =>
+    const dr = clinic ? await User.findById(clinic).select("assistantPhone").lean().catch(() => null) : null;
+    sendWhatsApp({ to: whatsapp.to, text: withAssistant(`${whatsapp.greeting || ""}${body}`, dr) }).catch((e) =>
       console.error("whatsapp failed:", e?.message)
     );
   }
@@ -621,6 +623,7 @@ router.post("/cancel-closed-days", async (req, res) => {
         url: "/client",
         email: t.email,
         whatsapp: t.whatsapp,
+        clinic: doctorId,
       });
     }
     res.json({ cancelled });
@@ -862,6 +865,7 @@ router.post("/", async (req, res) => {
       url: "/client",
       email: t.email,
       whatsapp: t.whatsapp,
+      clinic: populated.doctor?._id,
       data: { appointmentId: populated._id, canAcknowledge: true },
     });
 
@@ -1013,6 +1017,7 @@ router.post("/request", async (req, res) => {
           url: "/client",
           email: t.email,
           whatsapp: t.whatsapp,
+          clinic: doctorId,
           data: { appointmentId: appt._id, canAcknowledge: true },
         });
       }
@@ -1079,6 +1084,7 @@ router.patch("/:id/confirm", async (req, res) => {
       url: "/client",
       email: t.email,
       whatsapp: t.whatsapp,
+      clinic: populated.doctor?._id,
       data: { appointmentId: appt._id, canAcknowledge: true },
     });
 
@@ -1124,6 +1130,7 @@ router.patch("/:id/decline", async (req, res) => {
       url: "/client",
       email: t.email,
       whatsapp: t.whatsapp,
+      clinic: doctorId,
     });
 
     res.json(populated);
@@ -1252,6 +1259,7 @@ router.put("/:id", async (req, res) => {
         url: "/client",
         email: t.email,
         whatsapp: t.whatsapp,
+        clinic: appt.doctor?._id,
       });
     }
 

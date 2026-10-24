@@ -2,7 +2,7 @@ import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import { sendPush } from "./push.js";
 import { sendMail } from "./mailer.js";
-import { sendWhatsApp } from "./whatsapp.js";
+import { sendWhatsApp, withAssistant } from "./whatsapp.js";
 
 // Notify a whole clinic — the doctor AND all of their assistants — so staff
 // see every clinic-facing notification the doctor gets (in-app + web push).
@@ -49,7 +49,8 @@ export async function notifyUser(userId, { type, title, body, url, email }) {
 // loaded User doc. For a managed dependent, everything routes to the linked
 // guardian's account + email instead. `whatsapp` optionally replaces the
 // WhatsApp text (e.g. a bulleted version); otherwise the email text is reused.
-export async function notifyPatient(clientOrId, { type, title, body, url, whatsapp }) {
+// `clinic` (the doctor's id) adds that clinic's assistant number to the WhatsApp.
+export async function notifyPatient(clientOrId, { type, title, body, url, whatsapp, clinic }) {
   let c = clientOrId;
   if (!c || !c._id) {
     c = await User.findById(clientOrId)
@@ -79,7 +80,8 @@ export async function notifyPatient(clientOrId, { type, title, body, url, whatsa
   // is the guardian's number, matching how the email is routed above.
   const phone = c.managed ? c.guardianPhone : c.phone;
   if (phone) {
-    const waText = typeof whatsapp === "function" ? whatsapp(greet) : text;
+    const dr = clinic ? await User.findById(clinic).select("assistantPhone").lean().catch(() => null) : null;
+    const waText = withAssistant(typeof whatsapp === "function" ? whatsapp(greet) : text, dr);
     sendWhatsApp({ to: phone, text: waText }).catch((e) =>
       console.error("[notifyPatient] whatsapp:", e?.message)
     );

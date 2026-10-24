@@ -83,6 +83,9 @@ const userSchema = new mongoose.Schema(
     // How a patient's request to join this clinic is handled. false (default)
     // keeps the request-then-approve flow; true links the patient on the spot.
     autoApproveAssociations: { type: Boolean, default: false },
+    // The clinic assistant's phone, set in Settings. When present it's added to
+    // every WhatsApp message the clinic sends a patient ("Assistant to doctor").
+    assistantPhone: { type: String, trim: true, default: "" },
     // Default slot length in minutes, used by any bracket that names no type.
     // Controls how clinic hours are divided into bookable time slots.
     slotDuration: { type: Number, default: 15, min: 5, max: 120 },

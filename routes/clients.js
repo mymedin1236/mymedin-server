@@ -3,7 +3,7 @@ import crypto from "crypto";
 import User from "../models/User.js";
 import Association from "../models/Association.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp } from "../utils/whatsapp.js";
+import { sendWhatsApp, withAssistant } from "../utils/whatsapp.js";
 import { protect, requireRole, resolveClinic, clinicId } from "../middleware/auth.js";
 import {
   clinicPatientIds,
@@ -106,7 +106,8 @@ router.post("/", async (req, res) => {
       // A guardian usually has a phone but no email, so WhatsApp is the only
       // channel that actually reaches most of them.
       if (gPhone) {
-        sendWhatsApp({ to: gPhone, text: shareMessage }).catch((e) =>
+        const owner = await User.findById(owningDoctorId).select("assistantPhone").lean().catch(() => null);
+        sendWhatsApp({ to: gPhone, text: withAssistant(shareMessage, owner) }).catch((e) =>
           console.error("guardian whatsapp failed:", e?.message)
         );
       }
@@ -278,7 +279,8 @@ router.post("/:id/reset-password", async (req, res) => {
       }).catch((e) => console.error("reset email failed:", e?.message));
     }
     if (client.phone) {
-      sendWhatsApp({ to: client.phone, text: shareMessage }).catch((e) =>
+      const owner = await User.findById(clinicId(req.user)).select("assistantPhone").lean().catch(() => null);
+      sendWhatsApp({ to: client.phone, text: withAssistant(shareMessage, owner) }).catch((e) =>
         console.error("reset whatsapp failed:", e?.message)
       );
     }

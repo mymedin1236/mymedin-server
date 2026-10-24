@@ -4,7 +4,7 @@ import Association from "../models/Association.js";
 import Clinic from "../models/Clinic.js";
 import { notifyPatient } from "./notify.js";
 import { sendMail } from "./mailer.js";
-import { sendWhatsApp } from "./whatsapp.js";
+import { sendWhatsApp, withAssistant } from "./whatsapp.js";
 
 // A patient can be under the care of SEVERAL doctors at once (a dentist, a
 // physiotherapist and an eye specialist, say). The approved Association rows
@@ -252,7 +252,13 @@ export const announceLink = async (doctorId, client) => {
     `Dr. ${d?.name || "A doctor"}${where} added you as a patient on MyMedin. ` +
     `You can now see and book appointments with them alongside your other doctors.`;
   // Routes to the guardian for a managed child, on every channel.
-  await notifyPatient(client, { type: "association_approved", title: "New doctor added", body, url: "/client" });
+  await notifyPatient(client, {
+    type: "association_approved",
+    title: "New doctor added",
+    body,
+    url: "/client",
+    clinic: doctorId,
+  });
 };
 
 // Create a new adult patient at a clinic, approve them there, and send them
@@ -282,7 +288,7 @@ export const createClinicPatient = async (doctorId, { name, email, phone, passwo
   await shareWithClinic(client._id, doctorId).catch((e) => console.error("[clinic share]", e?.message));
 
   // The credentials message names the doctor, even if an assistant created it.
-  const owner = await User.findById(doctorId).select("name");
+  const owner = await User.findById(doctorId).select("name assistantPhone");
   const shareMessage =
     `Hi ${name}, Dr. ${owner?.name || ""} created your MyMedin account.\n\n` +
     `Login: ${loginUrl()}\n` +
@@ -301,7 +307,7 @@ export const createClinicPatient = async (doctorId, { name, email, phone, passwo
   // Most patients register with a phone and no email, so without this their
   // login never reaches them and staff have to paste it by hand.
   if (phone) {
-    sendWhatsApp({ to: phone, text: shareMessage }).catch((e) =>
+    sendWhatsApp({ to: phone, text: withAssistant(shareMessage, owner) }).catch((e) =>
       console.error("creds whatsapp failed:", e?.message)
     );
   }

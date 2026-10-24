@@ -25,6 +25,20 @@ console.log(
 // Sign-off appended to every formatted WhatsApp/email message.
 export const SIGNATURE = "Powered by\n*Mymedin.com* - bookings and clinic management made easy";
 
+// The clinic assistant's number (doctor.assistantPhone, set in Settings) as a
+// message line, or "" when the clinic hasn't added one.
+export const assistantLine = (doctor) =>
+  doctor?.assistantPhone ? `📞 *Assistant to doctor:* ${doctor.assistantPhone}` : "";
+
+// Add the assistant line to a patient-facing message: just above the "Powered
+// by" signature when there is one, otherwise at the end. Unchanged if no number.
+export function withAssistant(text, doctor) {
+  const line = assistantLine(doctor);
+  if (!line) return text;
+  const i = text.lastIndexOf(SIGNATURE);
+  return i >= 0 ? `${text.slice(0, i)}${line}\n\n${text.slice(i)}` : `${text}\n\n${line}`;
+}
+
 // Turn a stored phone number into a WAHA chat id ("923001234567@c.us").
 // Returns null when the number can't be made sense of, so callers skip it
 // rather than firing a doomed request.

@@ -2,7 +2,7 @@ import Appointment from "../models/Appointment.js";
 import Notification from "../models/Notification.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp, SIGNATURE } from "../utils/whatsapp.js";
+import { sendWhatsApp, SIGNATURE, assistantLine } from "../utils/whatsapp.js";
 
 const CHECK_MS = 15 * 60 * 1000; // check every 15 minutes
 
@@ -81,6 +81,7 @@ export function buildReminderText({ greet, patientName, managed, doctor, date, l
     `⌚ *Time:* ${fmtTime(date)}`,
     ...(line ? [`📍 *Location:* ${line}`] : []),
     ...(map ? [`🗺️ ${map}`] : []),
+    ...(assistantLine(doctor) ? [assistantLine(doctor)] : []),
     "",
     "Need to reschedule? Log in at mymedin.com/login",
     "Username: your phone number",
@@ -152,7 +153,7 @@ export async function runRemindersOnce() {
     [LAST.flag]: { $ne: true },
   })
     .populate("client", "name email phone managed guardian guardianName guardianEmail guardianPhone")
-    .populate("doctor", "name clinicName address area city location");
+    .populate("doctor", "name clinicName address area city location assistantPhone");
 
   let sent = 0;
   for (const appt of due) {

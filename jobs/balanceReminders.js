@@ -3,7 +3,7 @@ import User from "../models/User.js";
 import Notification from "../models/Notification.js";
 import { sendPush } from "../utils/push.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp } from "../utils/whatsapp.js";
+import { sendWhatsApp, withAssistant } from "../utils/whatsapp.js";
 
 // Remind patients with an unpaid treatment balance every 15 days (in-app + push
 // + email). A per-patient timestamp (User.lastBalanceReminderAt) gates the
@@ -41,7 +41,7 @@ export async function runBalanceRemindersOnce() {
       continue;
     }
 
-    const doctor = row.doctor ? await User.findById(row.doctor).select("name") : null;
+    const doctor = row.doctor ? await User.findById(row.doctor).select("name assistantPhone") : null;
     const drName = doctor?.name ? `Dr. ${doctor.name}` : "your doctor";
     const whose = client.managed ? `${client.name}'s` : "your";
     const title = "Outstanding balance";
@@ -74,7 +74,7 @@ export async function runBalanceRemindersOnce() {
 
     const phone = client.managed ? client.guardianPhone : client.phone;
     if (phone) {
-      sendWhatsApp({ to: phone, text }).catch((e) =>
+      sendWhatsApp({ to: phone, text: withAssistant(text, doctor) }).catch((e) =>
         console.error("[balance] whatsapp:", e?.message)
       );
     }

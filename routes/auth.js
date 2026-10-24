@@ -6,7 +6,7 @@ import AppointmentType from "../models/AppointmentType.js";
 import LoginEvent from "../models/LoginEvent.js";
 import { protect, requireStaff, resolveClinic, clinicId } from "../middleware/auth.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp, whatsappStatus, SIGNATURE } from "../utils/whatsapp.js";
+import { sendWhatsApp, whatsappStatus, SIGNATURE, toChatId } from "../utils/whatsapp.js";
 
 const router = express.Router();
 
@@ -532,7 +532,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
     const doctorId = clinicId(req.user);
     const [owner, appointmentTypes] = await Promise.all([
       User.findById(doctorId)
-        .select("clinicName availability slotDuration autoConfirmBookings autoApproveAssociations dayOverrides location")
+        .select("clinicName availability slotDuration autoConfirmBookings autoApproveAssociations assistantPhone dayOverrides location")
         .lean(),
       AppointmentType.find({ doctor: doctorId }).sort({ order: 1, createdAt: 1 }).lean(),
     ]);
@@ -543,6 +543,7 @@ router.get("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       slotDuration: owner.slotDuration || 15,
       autoConfirmBookings: !!owner.autoConfirmBookings,
       autoApproveAssociations: !!owner.autoApproveAssociations,
+      assistantPhone: owner.assistantPhone || "",
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,
@@ -605,6 +606,14 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       }
       owner.autoApproveAssociations = !!b.autoApproveAssociations;
     }
+    // Number shown to patients in WhatsApp messages. Empty clears it.
+    if (b.assistantPhone !== undefined) {
+      const phone = String(b.assistantPhone || "").trim();
+      if (phone && (phone.length > 20 || !toChatId(phone))) {
+        return res.status(400).json({ message: "Please enter a valid assistant phone number, e.g. 03001234567." });
+      }
+      owner.assistantPhone = phone;
+    }
     if (Array.isArray(b.dayOverrides)) {
       // Keep only well-formed, current-or-future entries so the list can't grow
       // unbounded with stale past exceptions.
@@ -654,6 +663,7 @@ router.put("/clinic-settings", protect, requireStaff, resolveClinic, async (req,
       slotDuration: owner.slotDuration || 15,
       autoConfirmBookings: !!owner.autoConfirmBookings,
       autoApproveAssociations: !!owner.autoApproveAssociations,
+      assistantPhone: owner.assistantPhone || "",
       dayOverrides: owner.dayOverrides || [],
       location: owner.location || null,
       appointmentTypes,

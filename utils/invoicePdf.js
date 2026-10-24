@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import { assistantLine } from "./whatsapp.js";
 
 // Patient invoice for a clinic's treatments & payments, rendered with pdfkit.
 // Used for download / print in the app and as the attachment on the emailed
@@ -248,6 +249,7 @@ export function buildInvoiceText({ doctor, client, treatments, number }) {
     `Total paid: ${money(paid)}`,
     due > 0 ? `*Balance due: ${money(due)}*` : "*All charges are fully paid — thank you!*",
     "",
+    ...(assistantLine(doctor) ? [assistantLine(doctor), ""] : []),
     `Regards,\n${clinic}`,
   ].join("\n");
 }

@@ -5,7 +5,7 @@ import User from "../models/User.js";
 import { protect, resolveClinic, clinicId } from "../middleware/auth.js";
 import { notifyClinic, notifyPatient, notifyUser } from "../utils/notify.js";
 import { sendMail } from "../utils/mailer.js";
-import { sendWhatsApp, SIGNATURE } from "../utils/whatsapp.js";
+import { sendWhatsApp, SIGNATURE, withAssistant } from "../utils/whatsapp.js";
 import { buildInvoicePdf, buildInvoiceText, invoiceFilename, invoiceNumber } from "../utils/invoicePdf.js";
 import { isClinicPatient, findClinicPatient } from "../utils/careTeam.js";
 
@@ -50,7 +50,7 @@ function paymentWhatsAppText({ greet, heading, rows, footer }) {
 async function notifyPaymentReceived(tr, amount, actor, method) {
   try {
     if (!amount || amount <= 0) return;
-    const doctor = await User.findById(tr.doctor).select("name phone").catch(() => null);
+    const doctor = await User.findById(tr.doctor).select("name phone assistantPhone").catch(() => null);
     const patient = await User.findById(tr.client)
       .select("name email phone managed guardian guardianName guardianEmail guardianPhone")
       .catch(() => null);
@@ -73,7 +73,7 @@ async function notifyPaymentReceived(tr, amount, actor, method) {
         body,
         url: "/client/treatments",
         whatsapp: (greet) =>
-          paymentWhatsAppText({
+          withAssistant(paymentWhatsAppText({
             greet,
             heading: "Payment Received",
             rows: [
@@ -86,7 +86,7 @@ async function notifyPaymentReceived(tr, amount, actor, method) {
               balanceRow,
             ],
             footer: "Thank you for your payment.",
-          }),
+          }), doctor),
       });
     }
 
@@ -209,7 +209,7 @@ async function loadInvoice(req, { pdf: withPdf = true } = {}) {
   const treatments = await Treatment.find(filter).sort({ date: 1 });
   if (!treatments.length) return null;
   const doctor = await User.findById(doctorId).select(
-    "name email phone address clinicName specialization city area"
+    "name email phone address clinicName specialization city area assistantPhone"
   );
   const issuedAt = new Date();
   const number = invoiceNumber(client, req.query.treatment, issuedAt);
