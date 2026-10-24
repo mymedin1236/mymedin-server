@@ -2,6 +2,7 @@ import express from "express";
 import Notification from "../models/Notification.js";
 import Appointment from "../models/Appointment.js";
 import Association from "../models/Association.js";
+import Invoice from "../models/Invoice.js";
 import { protect, resolveClinicSoft, clinicId } from "../middleware/auth.js";
 import { notifyClinic } from "../utils/notify.js";
 
@@ -40,19 +41,22 @@ const fmtWhen = (d) =>
 // For clinic staff, also returns pending association/appointment request counts
 // (for the "Patients"/"Appointments" nav badges) — kept separate from unread
 // notifications since those clear on approval/confirmation, not on being read.
+// A doctor also gets their unpaid subscription invoice count, which badges the
+// "Invoices" tab and moves it into view on the mobile bar until it's paid.
 router.get("/", async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const isStaff = req.user.role === "doctor" || req.user.role === "assistant";
     const filter = { user: req.user._id, ...clinicFilter(req) };
-    const [items, unreadCount, total, associationRequests, appointmentRequests] = await Promise.all([
+    const [items, unreadCount, total, associationRequests, appointmentRequests, unpaidInvoices] = await Promise.all([
       Notification.find(filter).sort({ createdAt: -1 }).limit(limit),
       Notification.countDocuments({ ...filter, read: false }),
       Notification.countDocuments(filter),
       isStaff ? Association.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
       isStaff ? Appointment.countDocuments({ doctor: clinicId(req.user), status: "pending" }) : 0,
+      req.user.role === "doctor" ? Invoice.countDocuments({ doctor: req.user._id, status: "unpaid" }) : 0,
     ]);
-    res.json({ items, unreadCount, total, associationRequests, appointmentRequests });
+    res.json({ items, unreadCount, total, associationRequests, appointmentRequests, unpaidInvoices });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
